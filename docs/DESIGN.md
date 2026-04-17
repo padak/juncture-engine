@@ -164,10 +164,19 @@ class Adapter(ABC):
 | view        | `CREATE OR REPLACE VIEW`                     | `CREATE OR REPLACE VIEW`                       |
 | incremental | `CREATE IF NOT EXISTS` + `INSERT OR REPLACE` | `MERGE INTO` on `unique_key`                   |
 | ephemeral   | inlined upstream at render time              | inlined                                        |
+| execute     | runs the script as-is (multi-statement)      | (not applicable — Snowflake runs source as-is) |
 
-**Thread safety**: each model run gets its own `cursor()`. DuckDB sharing one
-connection across threads was the first bug we hit — documented here so no one
-regresses it.
+`execute` is used by the Keboola sync-pull migrator (see 3.10). It does
+**not** wrap the SQL in a `CREATE OR REPLACE` shell; the whole migrated
+script (hundreds of statements) is handed to the adapter, which splits
+on `;` and runs statement-by-statement. This lets a 12 000-line Snowflake
+transformation compile unchanged and surfaces Snowflake-only constructs
+as real parse errors the author can fix iteratively.
+
+**Thread safety**: each model run — and each seed load — gets its own
+`cursor()` via `DuckDBAdapter._thread_cursor`. Sharing one DuckDB
+connection across threads was the first bug we hit — documented here so
+no one regresses it.
 
 ### 3.6 Executor (`juncture.core.executor`)
 
@@ -205,6 +214,74 @@ applicable). Exit code is non-zero on any model or test failure.
 
 The high-level entry point used by CLI and Keboola wrapper. Takes a
 `RunRequest`, returns a `RunReport`.
+
+### 3.10 Seeds (`juncture.core.seeds`, `juncture.core.type_inference`)
+
+Seeds sit under `seeds/` and are loaded once before the model DAG runs.
+They are not part of the model DAG; a model that wants to consume a seed
+references it by name via `ref('my_seed')` exactly like another model.
+
+Two seed layouts are recognized:
+
+- `seeds/<name>.csv` — single CSV file, loaded via DuckDB `read_csv_auto`
+  and materialized as a **table**.
+- `seeds/<name>/*.parquet` — directory of parquet slices, loaded via
+  DuckDB `read_parquet` with a glob and materialized as a **VIEW**. This
+  layout is what `kbagent storage unload-table --file-type parquet`
+  produces; VIEW avoids copying multi-GB datasets into the DuckDB file.
+
+Conventions and gotchas:
+
+- **Seed names may contain dots** (e.g. `in.c-db.carts`) so migrated
+  Snowflake-style quoted identifiers survive unchanged. Don't sanitize.
+- **`_discover_seeds` follows symlinks** (`os.walk(followlinks=True)`).
+  The sync-pull migrator (3.11) symlinks parquet dirs into `seeds/`.
+- **Parallel load** uses `ThreadPoolExecutor`, bounded by the
+  connection's `threads` setting. Every worker calls
+  `DuckDBAdapter._thread_cursor()` so DuckDB sees a fresh per-thread
+  cursor over the shared connection.
+- **Type inference is hybrid**. For parquet seeds where DuckDB's inferred
+  types are insufficient (e.g. all columns VARCHAR in Keboola Storage):
+  - Under 1 M rows: **full scan**, every cell checked against
+    `BOOLEAN → BIGINT → DOUBLE → DATE → TIMESTAMP → VARCHAR` precedence
+    using strict regex (DuckDB's `TRY_CAST` is too lenient).
+  - At or above 1 M rows: **sample** a configurable number of rows from
+    each column.
+  - Results are cached in `.juncture/type_cache.json` so re-runs skip the
+    scan.
+  - Users can override via `seeds/schema.yml` (same grammar as model
+    `schema.yml`) when inference would guess wrong.
+
+### 3.11 Migration (`juncture.migration`)
+
+Two migrators share the `juncture migrate-keboola*` CLI family:
+
+- `keboola_sql` — input is a raw Keboola configuration-API JSON payload.
+  Emits a minimal Juncture project.
+- `keboola_sync_pull` — input is the filesystem layout produced by
+  `kbagent sync pull`:
+
+  ```
+  main/transformation/keboola.snowflake-transformation/<name>/
+      _config.yml        # input/output mapping + parameters
+      _description.md
+      _jobs.jsonl
+      transform.sql      # the single multi-statement SQL body
+  ```
+
+  Produces:
+
+  ```
+  <output_dir>/
+      juncture.yaml                # DuckDB local connection
+      seeds/<destination>/...      # symlinks into parquet data dir
+      models/<transformation>.sql  # transform.sql verbatim, EXECUTE mat.
+      MIGRATION.md                 # human-readable log of what was done
+  ```
+
+  The SQL is migrated **as-is** using the `execute` materialization
+  (3.5). Snowflake constructs DuckDB rejects surface as real parse errors
+  the user can fix iteratively, rather than being silently rewritten.
 
 ## 4. Configuration: `juncture.yaml`
 

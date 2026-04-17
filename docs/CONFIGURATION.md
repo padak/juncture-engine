@@ -34,6 +34,8 @@ connections:
     path: data/my_project.duckdb
     threads: 4
     extensions: [httpfs, spatial]        # optional DuckDB extensions
+    memory_limit: "16GB"                 # optional, forwarded to DuckDB
+    temp_directory: "/tmp/juncture"      # optional, for out-of-core ops
 
   production:
     type: snowflake                       # requires `pip install 'juncture[snowflake]'`
@@ -44,6 +46,17 @@ connections:
     warehouse: COMPUTE_WH
     role: ANALYST
 ```
+
+### DuckDB-specific keys
+
+- `memory_limit`: forwarded to `SET memory_limit = ...`. Recommended
+  when loading many parquet seeds at once.
+- `temp_directory`: forwarded to `SET temp_directory = ...`. Used by
+  DuckDB for out-of-core operations and spills.
+- `extensions`: list of DuckDB extensions to `INSTALL` + `LOAD` at
+  connect time (e.g. `httpfs`, `spatial`, `parquet`).
+- `threads`: used by both DuckDB itself and Juncture's executor + seed
+  loader (both cap their `ThreadPoolExecutor` at this value).
 
 ## Env var interpolation
 
@@ -108,6 +121,54 @@ models:
           - accepted_values:
               values: [completed, refunded, pending]
 ```
+
+## Seeds
+
+Seeds live under `seeds/` and are loaded once, in parallel, before the
+model DAG runs. A model references them exactly like another model:
+`{{ ref('my_seed') }}` or `$ref(my_seed)`.
+
+### Layouts
+
+```
+seeds/customers.csv                  → materialized as TABLE customers
+seeds/orders/part-*.parquet          → materialized as VIEW orders
+seeds/in.c-db.carts/part-*.parquet   → VIEW "in.c-db.carts"  (dots preserved)
+```
+
+- CSV → one file, loaded with `read_csv_auto`, materialized as a table.
+- Parquet → a directory of slices, loaded with `read_parquet` glob,
+  materialized as a **VIEW** (no copy). This is what `kbagent storage
+  unload-table --file-type parquet` produces and what the sync-pull
+  migrator symlinks into `seeds/`.
+- **Seed names may contain dots**, so migrated Snowflake identifiers
+  (e.g. `in.c-db.carts`) survive unchanged. Seed discovery also follows
+  symlinks.
+
+### `seeds/schema.yml` (type overrides)
+
+DuckDB's inferred parquet types are often correct, but Keboola Storage
+parquet exports frequently hold everything as VARCHAR. Juncture does its
+own hybrid type inference (full-scan under 1 M rows, sample above) and
+caches results in `.juncture/type_cache.json`.
+
+When inference guesses wrong, override it:
+
+```yaml
+# seeds/schema.yml
+seeds:
+  - name: in.c-db.carts
+    columns:
+      - name: cart_id
+        data_type: BIGINT
+      - name: created_at
+        data_type: TIMESTAMP
+      - name: raw_payload
+        data_type: VARCHAR     # force-stay-varchar (no coercion attempt)
+```
+
+The cache is invalidated when the parquet mtimes change. To rebuild
+eagerly, delete `.juncture/type_cache.json`.
 
 ## Selectors
 
