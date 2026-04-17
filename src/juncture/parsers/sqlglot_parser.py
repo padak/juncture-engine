@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+import networkx as nx
 import sqlglot
 from sqlglot import exp
 
@@ -380,3 +381,117 @@ def split_statements(sql: str) -> list[str]:
     if tail:
         statements.append(tail)
     return statements
+
+
+# --- intra-script statement DAG (used by parallel EXECUTE + split-execute tools) ---
+
+# Regex fallback for statements SQLGlot can't parse. Permissive enough to accept
+# quoted identifiers with dots (``"in.c-db.carts"``) and dashes (``"oz-provize"``)
+# that migrated Snowflake scripts routinely use.
+_CREATE_OUT_RE = re.compile(
+    r'^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?'
+    r'(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([A-Za-z0-9_.\-]+)"?',
+    re.IGNORECASE,
+)
+_INSERT_OUT_RE = re.compile(
+    r'^\s*INSERT\s+(?:OR\s+(?:REPLACE|IGNORE)\s+)?INTO\s+"?([A-Za-z0-9_.\-]+)"?',
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class StatementNode:
+    """One parsed statement inside a multi-statement script.
+
+    Used as the node payload in :func:`build_statement_dag`. ``output`` is the
+    name of the table/view the statement writes (``CREATE TABLE X`` /
+    ``INSERT INTO X``), or ``None`` for read-only / dialect-only statements
+    (e.g. ``SET``, ``USE``, ``BEGIN``). ``inputs`` are the single-part table
+    names referenced by the statement — fully-qualified ``schema.table``
+    references are skipped by :func:`extract_table_references`.
+    """
+
+    index: int
+    sql: str
+    output: str | None
+    inputs: frozenset[str]
+
+
+def detect_output_table(stmt: str, *, dialect: str = "duckdb") -> str | None:
+    """Return the name of the table a DDL/DML statement writes, or ``None``.
+
+    Recognised shapes:
+
+    * ``CREATE [OR REPLACE] [TEMP] TABLE|VIEW [IF NOT EXISTS] <name> ...``
+    * ``INSERT [OR REPLACE|IGNORE] INTO <name> ...``
+
+    AST first (via SQLGlot); regex fallback for statements the parser
+    rejects. Quoted identifiers keep their inner content (``"in.c-db.carts"``
+    → ``in.c-db.carts``) so names match what ``extract_table_references``
+    returns on downstream reads.
+    """
+    try:
+        parsed = sqlglot.parse_one(stmt, read=dialect)
+    except sqlglot.errors.ParseError:
+        parsed = None
+
+    if isinstance(parsed, exp.Create):
+        kind = (parsed.args.get("kind") or "").upper()
+        if kind in ("TABLE", "VIEW"):
+            target = parsed.this
+            if isinstance(target, exp.Schema):
+                target = target.this
+            if isinstance(target, exp.Table) and target.name:
+                return target.name
+    if isinstance(parsed, exp.Insert):
+        target = parsed.this
+        if isinstance(target, exp.Schema):
+            target = target.this
+        if isinstance(target, exp.Table) and target.name:
+            return target.name
+
+    for pat in (_CREATE_OUT_RE, _INSERT_OUT_RE):
+        m = pat.match(stmt)
+        if m:
+            return m.group(1)
+    return None
+
+
+def build_statement_dag(sql: str, *, dialect: str = "duckdb") -> nx.DiGraph:
+    """Build the intra-script dependency DAG of a multi-statement SQL body.
+
+    The returned graph has one node per non-empty statement, keyed by its
+    0-based index, with a :class:`StatementNode` attached as ``node["node"]``.
+    An edge ``u -> v`` means statement ``u`` produced a table that statement
+    ``v`` reads; only the *latest* producer before a read wires the edge, so
+    scripts that rewrite the same table repeatedly still linearise correctly.
+
+    Inputs that were never produced by an earlier statement (i.e. external
+    tables — seeds, source data) contribute no edge: they are implicit roots
+    of the layer-0 set.
+
+    Callers typically feed the result to :func:`networkx.topological_generations`
+    to iterate parallelisable layers.
+    """
+    graph: nx.DiGraph = nx.DiGraph()
+    produced_by: dict[str, int] = {}
+
+    for idx, stmt in enumerate(split_statements(sql)):
+        output = detect_output_table(stmt, dialect=dialect)
+        # extract_table_references walks every exp.Table node, including the
+        # CREATE/INSERT target — strip it so INSERT INTO t SELECT * FROM t
+        # doesn't turn into a spurious self-input.
+        raw_inputs = extract_table_references(stmt, dialect=dialect)
+        if output is not None:
+            raw_inputs = raw_inputs - {output}
+        inputs = frozenset(raw_inputs)
+        node = StatementNode(index=idx, sql=stmt, output=output, inputs=inputs)
+        graph.add_node(idx, node=node)
+        for inp in inputs:
+            src = produced_by.get(inp)
+            if src is not None and src != idx:
+                graph.add_edge(src, idx, via=inp)
+        if output is not None:
+            produced_by[output] = idx
+
+    return graph
