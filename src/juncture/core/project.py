@@ -205,8 +205,9 @@ class Project:
           The seed name is the directory's relative path joined with ``.``
           (so ``seeds/in-c-db/carts/`` becomes seed ``in-c-db.carts``).
 
-        Directory-based CSV is not supported; a lone ``.csv`` inside a
-        directory is treated as its own seed using the file stem.
+        Symlinked directories are followed so that migrations can link one
+        parquet directory under multiple destination aliases without
+        copying data.
         """
         seeds_root = self.root / self.config.seeds_path
         if not seeds_root.exists():
@@ -218,9 +219,20 @@ class Project:
             for seed in data.get("seeds", []):
                 schema_overrides[seed["name"]] = seed.get("columns", {})
 
+        parquet_dirs: set[Path] = set()
+        csv_files: set[Path] = set()
+        # os.walk with followlinks=True reaches parquet files inside
+        # symlinked directories (Path.rglob does not).
+        for dirpath, _dirnames, filenames in os.walk(seeds_root, followlinks=True):
+            for fn in filenames:
+                full = Path(dirpath) / fn
+                if fn.endswith(".parquet"):
+                    parquet_dirs.add(full.parent)
+                elif fn.endswith(".csv"):
+                    csv_files.add(full)
+
         specs: list[SeedSpec] = []
-        # Parquet seeds: directories that contain one or more *.parquet files.
-        for parquet_dir in sorted({p.parent for p in seeds_root.rglob("*.parquet")}):
+        for parquet_dir in sorted(parquet_dirs):
             name = self._seed_name_for_dir(parquet_dir, seeds_root)
             specs.append(
                 SeedSpec(
@@ -230,9 +242,8 @@ class Project:
                     schema_overrides=schema_overrides.get(name, {}),
                 )
             )
-        # CSV seeds: any *.csv file (skip if already covered by a parquet dir).
         parquet_names = {s.name for s in specs}
-        for csv_file in sorted(seeds_root.rglob("*.csv")):
+        for csv_file in sorted(csv_files):
             name = csv_file.stem
             if name in parquet_names:
                 continue
