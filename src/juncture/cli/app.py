@@ -13,7 +13,7 @@ from rich.table import Table
 
 from juncture._version import __version__
 from juncture.core.project import Project
-from juncture.core.runner import Runner, RunRequest
+from juncture.core.runner import DryRunReport, Runner, RunRequest
 from juncture.parsers.sqlglot_parser import translate_sql
 
 app = typer.Typer(
@@ -164,6 +164,11 @@ def run(
     run_tests: bool = typer.Option(False, "--test/--no-test", help="Run data tests after models."),
     full_refresh: bool = typer.Option(False, "--full-refresh"),
     var: list[str] = typer.Option([], "--var", help="key=value vars accessible as ctx.vars()."),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the execution plan (seeds, model layers, intra-EXECUTE layers) without touching the DB.",
+    ),
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
@@ -177,6 +182,10 @@ def run(
         run_tests=run_tests,
         run_vars=run_vars,
     )
+    if dry_run:
+        plan = Runner().plan(request)
+        _render_plan(plan)
+        return
     report = Runner().run(request)
 
     table = Table(title=f"Run results — {report.project_name}")
@@ -219,6 +228,62 @@ def run(
 
     if not report.ok:
         raise typer.Exit(code=1)
+
+
+def _render_plan(plan: DryRunReport) -> None:
+    """Pretty-print a :class:`DryRunReport` for ``juncture run --dry-run``."""
+    console.print(
+        Panel.fit(
+            f"[bold]Dry-run plan — {plan.project_name}[/]\n"
+            f"[dim]No adapter is opened. Nothing is executed.[/]",
+            border_style="cyan",
+        )
+    )
+
+    if plan.seeds:
+        console.print(
+            f"\n[bold]Seeds[/] ({len(plan.seeds)}) — loaded in parallel before the model DAG:"
+        )
+        names = ", ".join(s.name for s in plan.seeds[:10])
+        if len(plan.seeds) > 10:
+            names += f", ... (+{len(plan.seeds) - 10} more)"
+        console.print(f"  {names}")
+
+    console.print(
+        f"\n[bold]Models[/] ({len(plan.models)}) — {plan.model_layers} layer(s):"
+    )
+    mt = Table(show_lines=False)
+    mt.add_column("Layer", justify="right")
+    mt.add_column("Model")
+    mt.add_column("Kind")
+    mt.add_column("Materialization")
+    mt.add_column("Depends on", overflow="fold")
+    mt.add_column("Intra-script")
+    for n in plan.models:
+        intra_str = "—"
+        if n.intra is not None:
+            intra_str = (
+                f"{n.intra.total_statements} stmts, {n.intra.layers} layer(s), "
+                f"widest={n.intra.widest_layer}, parallelism={n.intra.parallelism}"
+            )
+        mt.add_row(
+            str(n.layer),
+            n.name,
+            n.kind,
+            n.materialization or "—",
+            ", ".join(n.depends_on) or "—",
+            intra_str,
+        )
+    console.print(mt)
+
+    # Per-EXECUTE-model layer histogram so users can eyeball parallelism ceiling.
+    for n in plan.models:
+        if n.intra is None:
+            continue
+        console.print(f"\n[bold]{n.name}[/] intra-script layers:")
+        for i, size in enumerate(n.intra.layer_sizes):
+            bar = "#" * min(size, 60)
+            console.print(f"  layer {i + 1:>3}: {size:>4} {bar}")
 
 
 @app.command()
