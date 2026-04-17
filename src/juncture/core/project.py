@@ -135,10 +135,17 @@ class ProjectConfig:
 
 @dataclass(kw_only=True)
 class SeedSpec:
-    """A CSV seed file to be loaded as a source table."""
+    """A seed (source table) loaded before the DAG runs.
+
+    ``format`` is ``"csv"`` for a single ``.csv`` file, ``"parquet"`` for a
+    directory of sliced ``.parquet`` files. In the parquet case ``path``
+    points to the directory; DuckDB reads it via
+    ``read_parquet('<path>/*.parquet')``.
+    """
 
     name: str
     path: Path
+    format: str = "csv"
     schema_overrides: dict[str, str] = field(default_factory=dict)
 
 
@@ -189,26 +196,63 @@ class Project:
                 self.schemas[model_decl["name"]] = model_decl
 
     def _discover_seeds(self) -> list[SeedSpec]:
+        """Discover seeds under ``seeds_path``.
+
+        Recognises two layouts:
+
+        * ``seeds/<name>.csv`` -- a single CSV file.
+        * ``seeds/<sub>/<name>/*.parquet`` -- a directory of Parquet slices.
+          The seed name is the directory's relative path joined with ``.``
+          (so ``seeds/in-c-db/carts/`` becomes seed ``in-c-db.carts``).
+
+        Directory-based CSV is not supported; a lone ``.csv`` inside a
+        directory is treated as its own seed using the file stem.
+        """
         seeds_root = self.root / self.config.seeds_path
         if not seeds_root.exists():
             return []
-        specs: list[SeedSpec] = []
         schema_overrides: dict[str, dict[str, str]] = {}
         schema_file = seeds_root / "schema.yml"
         if schema_file.exists():
             data = yaml.safe_load(schema_file.read_text()) or {}
             for seed in data.get("seeds", []):
                 schema_overrides[seed["name"]] = seed.get("columns", {})
+
+        specs: list[SeedSpec] = []
+        # Parquet seeds: directories that contain one or more *.parquet files.
+        for parquet_dir in sorted({p.parent for p in seeds_root.rglob("*.parquet")}):
+            name = self._seed_name_for_dir(parquet_dir, seeds_root)
+            specs.append(
+                SeedSpec(
+                    name=name,
+                    path=parquet_dir,
+                    format="parquet",
+                    schema_overrides=schema_overrides.get(name, {}),
+                )
+            )
+        # CSV seeds: any *.csv file (skip if already covered by a parquet dir).
+        parquet_names = {s.name for s in specs}
         for csv_file in sorted(seeds_root.rglob("*.csv")):
             name = csv_file.stem
+            if name in parquet_names:
+                continue
             specs.append(
                 SeedSpec(
                     name=name,
                     path=csv_file,
+                    format="csv",
                     schema_overrides=schema_overrides.get(name, {}),
                 )
             )
         return specs
+
+    @staticmethod
+    def _seed_name_for_dir(parquet_dir: Path, seeds_root: Path) -> str:
+        rel = parquet_dir.relative_to(seeds_root)
+        # For a layout `seeds/<bucket>/<table>/` the logical name is
+        # "<bucket>.<table>" so that migrated Snowflake SQL referring to
+        # quoted identifiers like "in.c-db.carts" resolves correctly.
+        return ".".join(rel.parts) if rel.parts else parquet_dir.name
 
     def _discover_custom_tests(self) -> list[CustomTestSpec]:
         tests_root = self.root / self.config.tests_path

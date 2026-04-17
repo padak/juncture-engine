@@ -66,7 +66,9 @@ class DuckDBAdapter(Adapter):
             self._conn = None
 
     def resolve(self, name: str, *, schema: str) -> str:
-        return f"{schema}.{name}"
+        # Quote both schema and name so identifiers can contain dots or
+        # hyphens ("in.c-db.carts" from migrated Snowflake projects).
+        return f'"{schema}"."{name}"'
 
     def _ensure_schema(self, schema: str) -> None:
         self.conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
