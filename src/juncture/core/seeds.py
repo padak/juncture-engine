@@ -14,11 +14,20 @@ Two seed layouts are recognised:
 
 Seed names may contain dots (e.g. ``in.c-db.carts``) so that migrated
 transformations can keep Snowflake-style quoted identifiers unchanged.
+
+Parallel loading
+----------------
+On DuckDB, every seed lands in the same database file so we can run
+several ``CREATE VIEW`` / type-inference passes concurrently via
+``adapter._thread_cursor()``. The worker count is capped by
+``DuckDBAdapter.threads`` (from ``juncture.yaml``).
 """
 
 from __future__ import annotations
 
 import csv
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -27,16 +36,48 @@ if TYPE_CHECKING:
     from juncture.adapters.base import Adapter
     from juncture.core.project import SeedSpec
 
+log = logging.getLogger(__name__)
+
 
 def load_seeds(adapter: Adapter, seeds: list[SeedSpec], *, schema: str) -> dict[str, int]:
     """Materialize every seed as ``schema.<seed_name>``.
 
     Returns a mapping ``seed_name -> row_count`` for reporting.
+
+    Uses a thread pool when the adapter provides ``_thread_cursor`` and
+    has its ``threads`` attribute > 1. Otherwise runs serially.
     """
+    max_workers = _seed_parallelism(adapter)
+    if max_workers <= 1 or len(seeds) <= 1:
+        return {seed.name: _load_one(adapter, seed, schema=schema) for seed in seeds}
+
     counts: dict[str, int] = {}
-    for seed in seeds:
-        counts[seed.name] = _load_one(adapter, seed, schema=schema)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_load_one, adapter, seed, schema=schema): seed for seed in seeds}
+        for future in as_completed(futures):
+            seed = futures[future]
+            try:
+                counts[seed.name] = future.result()
+            except Exception as exc:
+                log.error("Seed %s failed: %s", seed.name, exc)
+                raise
     return counts
+
+
+def _seed_parallelism(adapter: Adapter) -> int:
+    """Derive parallel seed workers from adapter config.
+
+    DuckDB cursors are cheap and independent, so we happily spawn up to
+    ``adapter.threads`` workers. Falls back to 1 for adapters that don't
+    advertise the attribute.
+    """
+    threads = getattr(adapter, "threads", None)
+    if threads is None:
+        return 1
+    try:
+        return max(1, int(threads))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _load_one(adapter: Adapter, seed: SeedSpec, *, schema: str) -> int:
