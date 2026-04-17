@@ -57,16 +57,25 @@ def _load_one(adapter: Adapter, seed: SeedSpec, *, schema: str) -> int:
 def _load_duckdb(cursor: Any, fqn: str, seed: SeedSpec) -> int:
     """Fast path: DuckDB reads CSV and Parquet natively, no Python iteration.
 
-    Parquet seeds become VIEWs over ``read_parquet``. This keeps RAM use
-    flat when hundreds of seed tables live in one project: the parquet
-    files stay on disk and DuckDB streams rows through them lazily.
+    Parquet seeds become VIEWs over ``read_parquet`` with **inferred column
+    types** (bigint/double/date/timestamp). This keeps RAM use flat across
+    hundreds of seeds while letting downstream SQL run arithmetic and date
+    math on columns that Keboola exports as plain VARCHAR.
 
     CSV seeds become TABLEs (eager load) because every subsequent query
     would otherwise re-parse the CSV header-inferred schema.
     """
     if seed.format == "parquet":
+        from juncture.core.type_inference import build_typed_view_sql, infer_parquet_types
+
         glob = f"{seed.path.as_posix().rstrip('/')}/*.parquet"
-        cursor.execute(f"CREATE OR REPLACE VIEW {fqn} AS SELECT * FROM read_parquet('{glob}')")
+        overrides = seed.schema_overrides or {}
+        inference = infer_parquet_types(cursor, glob, overrides=overrides)
+        cursor.execute(
+            build_typed_view_sql(
+                fqn, glob, inference.column_types, native_types=inference.native_types
+            )
+        )
     else:  # csv
         cursor.execute(
             f"CREATE OR REPLACE TABLE {fqn} AS "
