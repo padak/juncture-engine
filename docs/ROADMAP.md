@@ -38,6 +38,9 @@ Target: Juncture is safe to use on a real laptop pipeline of 20-50 models.
       converts Keboola SQL transformation layouts into a Juncture project.
 - [x] **`EXECUTE` materialization** for multi-statement Snowflake SQL
       migrated as-is.
+- [x] **Parallel EXECUTE**: intra-script DAG + `ThreadPoolExecutor` per
+      topological layer, opt-in via `config.parallelism: N`. Default 1
+      = sequential (back-compat).
 - [x] **Hybrid type inference** for parquet seeds (full-scan < 1M rows,
       sample above).
 - [x] **Parallel seed loading** via `ThreadPoolExecutor`.

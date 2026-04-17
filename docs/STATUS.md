@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `phase-3-slevomat-migration` · commit `0e76ff7`.
+> **Last updated:** 2026-04-18 · branch `phase-3-slevomat-migration` · commit `HEAD` (po Phase 3c — parallel EXECUTE).
 
 ## Point: co a proč děláme
 
@@ -35,6 +35,9 @@ helper). Pár položek z `ROADMAP.md` ještě čeká — viz sekce v0.2 tam.
 | `44d2f6a` | parquet seedy jako VIEW (ne TABLE) + DuckDB `memory_limit` / `temp_directory` |
 | `cfbc5ee` | hybridní type inference (full-scan < 1 M řádků, sample nad 1 M) |
 | `0e76ff7` | paralelní seed loading přes `ThreadPoolExecutor` |
+| `4fc601d` | CASE type harmonization Snowflake→DuckDB + `juncture sanitize` CLI (řeší VARCHAR/INT blocker) |
+| `a300e37` | `StatementNode` + `build_statement_dag` — intra-script DAG API v parseru |
+| _HEAD_ | **Parallel EXECUTE** — `config.parallelism: N` iteruje vrstvy přes `ThreadPoolExecutor` |
 
 ### Infrastruktura
 
@@ -64,12 +67,12 @@ helper). Pár položek z `ROADMAP.md` ještě čeká — viz sekce v0.2 tam.
 
 ### Bezprostředně (dokončit Phase 3)
 
-- [ ] Ověřit, že hybridní type inference (`cfbc5ee`) vyřeší VARCHAR/INT
-      konflikty na reálném Slevomat běhu.
-- [ ] Dotáhnout Slevomat E2E: seedy → migrace → `juncture run` → všechny
-      modely success, ideálně i `juncture test`.
-- [ ] Zaznamenat reálné benchmark číslo (208 seedů + 374 statementů) do
-      `BENCHMARKS.md`.
+- [ ] Dotáhnout Slevomat E2E — typové chyby v původním SQL řešíme
+      manuálně přes Sonet agenty (není to problém Juncture).
+- [ ] Změřit **sekvenční baseline** vs **parallel EXECUTE** na Slevomatu
+      — různé hodnoty `parallelism` (1, 2, 4, 8) → `BENCHMARKS.md`.
+- [ ] Rozhodnout, jestli potřebujeme **Cestu B (split monolitu na
+      mini-modely)** na základě reálného zisku z Cesty C.
 - [ ] Nahlásit / opravit OOM v kbagent (z Phase 3 kick-off).
 
 ### Phase 2 / v0.2 — zbývající položky

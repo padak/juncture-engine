@@ -122,6 +122,58 @@ models:
               values: [completed, refunded, pending]
 ```
 
+## Parallel EXECUTE materialization
+
+Models with ``materialization: execute`` run their multi-statement body
+as-is. By default every statement is sent to DuckDB one at a time,
+sequentially. To parallelise the body set ``config.parallelism`` on the
+model:
+
+```yaml
+# models/schema.yml
+models:
+  - name: slevomat_main_task
+    materialization: execute
+    config:
+      parallelism: 4
+```
+
+What happens when parallelism > 1:
+
+1. The body is parsed into an intra-script DAG via
+   ``juncture.parsers.sqlglot_parser.build_statement_dag`` — every
+   statement that writes a table becomes a producer, every statement
+   that reads one wires an edge.
+2. Juncture walks the graph layer by layer (``networkx.topological_
+   generations``). Each layer's statements are submitted to a
+   ``ThreadPoolExecutor`` of the given width; the next layer starts only
+   when the previous one has fully finished.
+3. Per-layer elapsed time is logged at INFO so you can see where
+   parallelism actually pays off vs. where DuckDB's catalog lock or
+   intra-query thread scheduler serialises things back.
+
+Guidelines:
+
+- **Start low**, e.g. ``parallelism: 2`` or ``4``. DuckDB already
+  parallelises each individual query across all threads (``SET threads =
+  N``); stacking more inter-query parallelism on top can contend rather
+  than help.
+- **Rule of thumb**: ``parallelism × connection.threads ≈ physical cores``.
+  On a 4 vCPU box, ``parallelism: 4`` with ``threads: 2`` is usually a
+  better starting point than ``parallelism: 8`` with ``threads: 4``.
+- **Failure semantics**: any statement throwing an exception aborts the
+  run — remaining submitted futures are cancelled and the error is
+  re-raised with layer + statement index context. No automatic retry.
+- **Invalid values fail fast**: ``parallelism: "four"`` or ``parallelism:
+  0`` raises ``AdapterError`` at startup, never silently downgrades.
+- ``parallelism: 1`` (or unset) takes the classic sequential branch
+  unchanged.
+
+See also [`scripts/analyze_execute.py`](../scripts/analyze_execute.py)
+— offline preview of the layer histogram, widest-layer ceiling, and
+top-10 fan-out producers for a given EXECUTE script. Run it before
+tuning the ``parallelism`` value.
+
 ## Seeds
 
 Seeds live under `seeds/` and are loaded once, in parallel, before the

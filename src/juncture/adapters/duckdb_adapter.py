@@ -13,16 +13,24 @@ This is the reference adapter. It:
 
 from __future__ import annotations
 
+import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import duckdb
+import networkx as nx
 
 from juncture.adapters.base import Adapter, AdapterError, MaterializationResult
 from juncture.adapters.registry import register_adapter
 from juncture.core.model import Materialization
-from juncture.parsers.sqlglot_parser import split_statements
+from juncture.parsers.sqlglot_parser import (
+    build_statement_dag,
+    split_statements,
+)
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from juncture.core.context import TransformContext
@@ -138,12 +146,20 @@ class DuckDBAdapter(Adapter):
     def _execute_raw(self, model: Model, rendered_sql: str, *, schema: str) -> MaterializationResult:
         """Run ``rendered_sql`` as a sequence of statements separated by ``;``.
 
-        DuckDB's Python client accepts one statement per ``execute`` call, so
-        we split on semicolons after stripping line comments and then send each
-        non-empty chunk independently. The adapter reports the number of
-        statements run as ``row_count`` -- genuine row counts would require
-        parsing the DDL.
+        Defaults to sequential execution. When ``model.config["parallelism"]``
+        is an integer greater than 1, the body is parsed into an intra-script
+        dependency DAG (see :func:`build_statement_dag`) and each topological
+        layer is fanned out over a :class:`ThreadPoolExecutor` of that width.
+
+        Row counts would require inspecting each DDL/DML statement; instead
+        the adapter reports the number of statements executed as ``row_count``.
         """
+        parallelism = _coerce_parallelism(model.config.get("parallelism"))
+        if parallelism > 1:
+            return self._execute_raw_parallel(
+                model, rendered_sql, schema=schema, parallelism=parallelism
+            )
+
         cursor = self._thread_cursor()
         # DuckDB allows `USE schema;` to set the default search path; with
         # quoted schema this keeps bare identifiers from the migrated SQL
@@ -165,6 +181,98 @@ class DuckDBAdapter(Adapter):
             fully_qualified=fqn,
             row_count=len(statements),
             elapsed_seconds=elapsed,
+            warnings=[],
+        )
+
+    def _execute_raw_parallel(
+        self,
+        model: Model,
+        rendered_sql: str,
+        *,
+        schema: str,
+        parallelism: int,
+    ) -> MaterializationResult:
+        """Parallel variant of :meth:`_execute_raw`.
+
+        Builds the intra-script DAG, then walks
+        :func:`networkx.topological_generations` layer by layer. Each layer's
+        statements are submitted to a shared ``ThreadPoolExecutor``; the layer
+        completes only when every statement in it has finished (or one fails,
+        in which case the error is re-raised with layer + statement context).
+
+        Per-layer elapsed time is logged at INFO so users can see where
+        parallelism pays off vs. where DuckDB's catalog lock / intra-query
+        thread scheduler serialises things.
+
+        Every worker call acquires its own cursor via :meth:`_thread_cursor`
+        and issues ``USE "<schema>"`` before the statement — DuckDB cursors
+        do not inherit the parent connection's current schema.
+        """
+        graph = build_statement_dag(rendered_sql, dialect=self.dialect)
+        total = graph.number_of_nodes()
+        if total == 0:
+            return self._empty_execute_result(model, schema=schema)
+
+        layers = list(nx.topological_generations(graph))
+        log.info(
+            "EXECUTE parallel: %s — %d statements, %d layers, parallelism=%d",
+            model.name,
+            total,
+            len(layers),
+            parallelism,
+        )
+
+        def _run_one(idx: int) -> None:
+            node = graph.nodes[idx]["node"]
+            cursor = self._thread_cursor()
+            cursor.execute(f'USE "{schema}"')
+            cursor.execute(node.sql)
+
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=parallelism) as pool:
+            for layer_i, layer in enumerate(layers):
+                t_layer = time.perf_counter()
+                future_to_idx = {pool.submit(_run_one, idx): idx for idx in layer}
+                try:
+                    for fut in as_completed(future_to_idx):
+                        fut.result()
+                except Exception as exc:
+                    # Cancel any still-queued futures so we don't keep pushing
+                    # statements against a database that already errored.
+                    for pending in future_to_idx:
+                        pending.cancel()
+                    failed_idx = future_to_idx[fut]
+                    failed_node = graph.nodes[failed_idx]["node"]
+                    raise AdapterError(
+                        f"EXECUTE parallel failed in layer {layer_i} "
+                        f"(statement #{failed_idx}, output={failed_node.output!r}): {exc}"
+                    ) from exc
+                log.info(
+                    "  layer %d/%d: %d statements, %.2fs",
+                    layer_i + 1,
+                    len(layers),
+                    len(layer),
+                    time.perf_counter() - t_layer,
+                )
+        elapsed = time.perf_counter() - t0
+
+        fqn = self.resolve(model.name, schema=schema)
+        return MaterializationResult(
+            model_name=model.name,
+            materialization=Materialization.EXECUTE,
+            fully_qualified=fqn,
+            row_count=total,
+            elapsed_seconds=elapsed,
+            warnings=[],
+        )
+
+    def _empty_execute_result(self, model: Model, *, schema: str) -> MaterializationResult:
+        return MaterializationResult(
+            model_name=model.name,
+            materialization=Materialization.EXECUTE,
+            fully_qualified=self.resolve(model.name, schema=schema),
+            row_count=0,
+            elapsed_seconds=0.0,
             warnings=[],
         )
 
@@ -259,6 +367,27 @@ def _build_materialization_statement(
         # downstream rendering works. Proper inlining happens in the executor.
         return f"CREATE OR REPLACE VIEW {fqn} AS ({stripped})"
     raise AdapterError(f"Unsupported materialization: {materialization}")
+
+
+def _coerce_parallelism(raw: Any) -> int:
+    """Normalise ``config["parallelism"]`` into a positive integer.
+
+    Accepts ``None`` / missing (returns 1, = sequential), an int literal,
+    or a string that parses as an int. Anything else raises ``AdapterError``
+    so a typo like ``parallelism: "four"`` fails fast rather than silently
+    degrading to sequential.
+    """
+    if raw is None:
+        return 1
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise AdapterError(
+            f"Invalid parallelism value {raw!r}: expected a positive integer"
+        ) from exc
+    if value < 1:
+        raise AdapterError(f"parallelism must be >= 1 (got {value})")
+    return value
 
 
 register_adapter("duckdb", DuckDBAdapter)

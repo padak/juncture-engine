@@ -173,6 +173,16 @@ on `;` and runs statement-by-statement. This lets a 12 000-line Snowflake
 transformation compile unchanged and surfaces Snowflake-only constructs
 as real parse errors the author can fix iteratively.
 
+**Parallel EXECUTE**: when the model declares
+`config.parallelism: N` (N > 1), the adapter parses the body into an
+intra-script DAG via `juncture.parsers.sqlglot_parser.build_statement_dag`
+and walks `networkx.topological_generations` layer by layer through a
+`ThreadPoolExecutor(max_workers=N)`. Each worker picks a fresh cursor
+via `_thread_cursor()` and issues `USE "<schema>"` before running its
+statement (DuckDB cursors don't inherit the parent connection's current
+schema). Layer elapsed times are logged at INFO. Default `parallelism`
+is 1 = classic sequential behaviour, fully back-compatible.
+
 **Thread safety**: each model run — and each seed load — gets its own
 `cursor()` via `DuckDBAdapter._thread_cursor`. Sharing one DuckDB
 connection across threads was the first bug we hit — documented here so
