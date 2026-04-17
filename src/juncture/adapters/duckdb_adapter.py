@@ -40,11 +40,15 @@ class DuckDBAdapter(Adapter):
         path: str | Path = ":memory:",
         threads: int | None = None,
         extensions: list[str] | None = None,
+        memory_limit: str | None = None,
+        temp_directory: str | None = None,
         **_: Any,
     ) -> None:
         self.path = str(path) if path != ":memory:" else ":memory:"
         self.threads = threads
         self.extensions = extensions or []
+        self.memory_limit = memory_limit
+        self.temp_directory = temp_directory
         self._conn: duckdb.DuckDBPyConnection | None = None
 
     @property
@@ -57,6 +61,10 @@ class DuckDBAdapter(Adapter):
         self._conn = duckdb.connect(database=self.path, read_only=False)
         if self.threads:
             self._conn.execute(f"PRAGMA threads = {int(self.threads)}")
+        if self.memory_limit:
+            self._conn.execute(f"SET memory_limit = '{self.memory_limit}'")
+        if self.temp_directory:
+            self._conn.execute(f"SET temp_directory = '{self.temp_directory}'")
         for ext in self.extensions:
             self._conn.execute(f"INSTALL {ext}; LOAD {ext};")
 

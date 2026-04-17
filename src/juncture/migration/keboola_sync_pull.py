@@ -141,6 +141,11 @@ connections:
     type: duckdb
     path: {duckdb_path}
     threads: 4
+    # Cap DuckDB's working-set memory so a single oversized query cannot
+    # kill the host; spillage goes to temp_directory. Override per host:
+    # on 2 GB hosts drop to 1200M; on 16+ GB hosts bump to 8G.
+    memory_limit: 1500M
+    temp_directory: data/duckdb_tmp
 """
     )
 

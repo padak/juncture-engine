@@ -55,10 +55,18 @@ def _load_one(adapter: Adapter, seed: SeedSpec, *, schema: str) -> int:
 
 
 def _load_duckdb(cursor: Any, fqn: str, seed: SeedSpec) -> int:
-    """Fast path: DuckDB reads CSV and Parquet natively, no Python iteration."""
+    """Fast path: DuckDB reads CSV and Parquet natively, no Python iteration.
+
+    Parquet seeds become VIEWs over ``read_parquet``. This keeps RAM use
+    flat when hundreds of seed tables live in one project: the parquet
+    files stay on disk and DuckDB streams rows through them lazily.
+
+    CSV seeds become TABLEs (eager load) because every subsequent query
+    would otherwise re-parse the CSV header-inferred schema.
+    """
     if seed.format == "parquet":
         glob = f"{seed.path.as_posix().rstrip('/')}/*.parquet"
-        cursor.execute(f"CREATE OR REPLACE TABLE {fqn} AS SELECT * FROM read_parquet('{glob}')")
+        cursor.execute(f"CREATE OR REPLACE VIEW {fqn} AS SELECT * FROM read_parquet('{glob}')")
     else:  # csv
         cursor.execute(
             f"CREATE OR REPLACE TABLE {fqn} AS "
