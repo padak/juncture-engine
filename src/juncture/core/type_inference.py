@@ -143,7 +143,7 @@ def infer_parquet_types(
         types[col] = overrides.get(col, native)
 
     if parts:
-        probe_sql = f"SELECT {', '.join(parts)} FROM {source}"  # noqa: S608 -- identifiers are quoted
+        probe_sql = f"SELECT {', '.join(parts)} FROM {source}"
         row = cursor.execute(probe_sql).fetchone() or ()
         idx = 0
         for col in varchar_columns:

@@ -11,7 +11,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 
 import duckdb  # noqa: E402
 
-from juncture.core.type_inference import build_typed_view_sql, infer_parquet_types
+from juncture.core.type_inference import build_typed_view_sql, infer_parquet_types  # noqa: E402
 
 
 def _write_parquet_strings(path: Path, rows: list[dict[str, str | None]]) -> None:

@@ -11,7 +11,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 
 import duckdb  # noqa: E402
 
-from juncture.core.runner import RunRequest, Runner  # noqa: E402
+from juncture.core.runner import Runner, RunRequest  # noqa: E402
 
 
 def _write_parquet(path: Path, rows: list[dict[str, object]]) -> None:

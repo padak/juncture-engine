@@ -30,10 +30,12 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+from juncture.parsers.sqlglot_parser import translate_sql
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ class SyncPullMigrationResult:
     sql_line_count: int
     seeds_linked: int
     seeds_missing: list[str]
+    sql_translated: bool
 
 
 def migrate_keboola_sync_pull(
@@ -55,6 +58,8 @@ def migrate_keboola_sync_pull(
     output_dir: str | Path,
     seeds_source: str | Path,
     duckdb_path: str = "data/juncture.duckdb",
+    source_dialect: str = "snowflake",
+    target_dialect: str = "duckdb",
 ) -> SyncPullMigrationResult:
     """Convert a sync-pull transformation directory into a Juncture project.
 
@@ -90,11 +95,28 @@ def migrate_keboola_sync_pull(
     # Link seeds into seeds/ using the Keboola destination alias as the seed name.
     input_seeds, missing = _link_seeds(cfg, out_dir / "seeds", seeds_src)
 
-    # Copy the SQL verbatim as the sole model. The EXECUTE materialization
-    # will run it unmodified.
+    # Copy the SQL as the sole model. The EXECUTE materialization runs it
+    # statement-by-statement. We translate Snowflake -> DuckDB per statement
+    # so dialect-specific constructs (e.g. Snowflake's CASE VARCHAR/INT
+    # coercion) are resolved up front; statements SQLGlot can't parse fall
+    # through verbatim.
     model_name = _slug(tx_name)
     model_path = out_dir / "models" / f"{model_name}.sql"
-    sql_body = sql_path.read_text()
+    raw_sql = sql_path.read_text()
+    sql_translated = False
+    if source_dialect != target_dialect:
+        translated = translate_sql(raw_sql, read=source_dialect, write=target_dialect)
+        sql_body = translated
+        sql_translated = True
+        log.info(
+            "Translated SQL from %s to %s (%d chars -> %d chars)",
+            source_dialect,
+            target_dialect,
+            len(raw_sql),
+            len(translated),
+        )
+    else:
+        sql_body = raw_sql
     model_path.write_text(sql_body)
 
     _write_schema_yml(out_dir / "models" / "schema.yml", model_name=model_name)
@@ -118,6 +140,7 @@ def migrate_keboola_sync_pull(
         sql_line_count=sql_body.count("\n") + 1,
         seeds_linked=len(input_seeds),
         seeds_missing=missing,
+        sql_translated=sql_translated,
     )
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from juncture.adapters.duckdb_adapter import _split_sql_statements
+from juncture.parsers.sqlglot_parser import split_statements as _split_sql_statements
 
 
 def test_simple_split() -> None:

@@ -332,6 +332,12 @@ def migrate_sync_pull(
         "`kbagent storage unload-table --file-type parquet --download`.",
     ),
     duckdb_path: str = typer.Option("data/juncture.duckdb", "--duckdb-path"),
+    source_dialect: str = typer.Option(
+        "snowflake",
+        "--source-dialect",
+        help="Source SQL dialect (snowflake, bigquery, redshift...); use 'duckdb' to skip translation.",
+    ),
+    target_dialect: str = typer.Option("duckdb", "--target-dialect"),
 ) -> None:
     """Convert a kbagent sync-pull transformation directory into a Juncture project."""
     from juncture.migration import migrate_keboola_sync_pull
@@ -341,11 +347,16 @@ def migrate_sync_pull(
         output_dir=output,
         seeds_source=seeds,
         duckdb_path=duckdb_path,
+        source_dialect=source_dialect,
+        target_dialect=target_dialect,
     )
     table = Table(title=f"Migrated transformation {result.transformation_name!r}")
     table.add_column("Metric")
     table.add_column("Value", justify="right")
     table.add_row("SQL lines", f"{result.sql_line_count:,}")
+    table.add_row(
+        "SQL translated", f"{source_dialect} -> {target_dialect}" if result.sql_translated else "no"
+    )
     table.add_row("Input seeds linked", str(result.seeds_linked))
     table.add_row("Output tables", str(len(result.output_tables)))
     table.add_row("Missing seeds", str(len(result.seeds_missing)))
@@ -358,6 +369,61 @@ def migrate_sync_pull(
             border_style="green",
         )
     )
+
+
+@app.command()
+def sanitize(
+    project: Path = typer.Option(
+        Path("."),
+        "--project",
+        "-p",
+        help="Juncture project directory whose models/*.sql files will be re-translated in place.",
+    ),
+    source_dialect: str = typer.Option("snowflake", "--from-dialect"),
+    target_dialect: str = typer.Option("duckdb", "--to-dialect"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Report which files would change without writing them.",
+    ),
+) -> None:
+    """Re-translate all ``models/*.sql`` files through ``translate_sql``.
+
+    Intended for projects produced by an older migration pass where Snowflake
+    SQL was copied verbatim and DuckDB chokes on dialect-specific constructs
+    (implicit VARCHAR coercion in CASE, etc.). The same translator the migrator
+    now runs by default is applied to every SQL model, statement by statement.
+    """
+    models_dir = project / "models"
+    if not models_dir.is_dir():
+        console.print(f"[red]No models/ directory at {models_dir}[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Sanitize {source_dialect} -> {target_dialect}")
+    table.add_column("Model")
+    table.add_column("Before", justify="right")
+    table.add_column("After", justify="right")
+    table.add_column("Changed", justify="center")
+
+    changed_count = 0
+    total = 0
+    for sql_file in sorted(models_dir.glob("*.sql")):
+        original = sql_file.read_text()
+        translated = translate_sql(original, read=source_dialect, write=target_dialect)
+        changed = translated != original
+        total += 1
+        if changed:
+            changed_count += 1
+        mark = "[yellow]yes[/]" if changed else "no"
+        table.add_row(sql_file.name, f"{len(original):,}", f"{len(translated):,}", mark)
+        if changed and not dry_run:
+            sql_file.write_text(translated)
+
+    console.print(table)
+    summary = f"{changed_count}/{total} model(s) updated"
+    if dry_run:
+        summary += " (dry-run, nothing written)"
+    console.print(Panel(summary, title="sanitize", border_style="green"))
 
 
 if __name__ == "__main__":

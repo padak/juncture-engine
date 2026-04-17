@@ -113,9 +113,7 @@ def _load_duckdb(cursor: Any, fqn: str, seed: SeedSpec) -> int:
         overrides = seed.schema_overrides or {}
         inference = infer_parquet_types(cursor, glob, overrides=overrides)
         cursor.execute(
-            build_typed_view_sql(
-                fqn, glob, inference.column_types, native_types=inference.native_types
-            )
+            build_typed_view_sql(fqn, glob, inference.column_types, native_types=inference.native_types)
         )
     else:  # csv
         cursor.execute(

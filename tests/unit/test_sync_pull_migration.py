@@ -49,10 +49,13 @@ def test_migrate_sync_pull_links_seeds_and_copies_sql(tmp_path: Path) -> None:
     tx, seeds = _make_sync_pull_tree(tmp_path, sql_body=sql)
     out = tmp_path / "proj"
 
+    # Opt out of dialect translation to keep the assertion on the exact body;
+    # the default (snowflake->duckdb) is exercised in a dedicated test below.
     result = migrate_keboola_sync_pull(
         transformation_dir=tx,
         output_dir=out,
         seeds_source=seeds,
+        source_dialect="duckdb",
     )
 
     assert result.transformation_name == "my_task"
@@ -60,6 +63,7 @@ def test_migrate_sync_pull_links_seeds_and_copies_sql(tmp_path: Path) -> None:
     assert result.seeds_linked == 2
     assert result.seeds_missing == ["in.absent"]
     assert result.output_tables == {"out.daily_revenue": "out.c-marts.daily_revenue"}
+    assert result.sql_translated is False
 
     # Project skeleton
     assert (out / "juncture.yaml").exists()
@@ -73,10 +77,35 @@ def test_migrate_sync_pull_links_seeds_and_copies_sql(tmp_path: Path) -> None:
     assert not (out / "seeds" / "in.absent").exists()
 
 
+def test_migrate_sync_pull_translates_snowflake_to_duckdb_by_default(tmp_path: Path) -> None:
+    # The Slevomat BinderException pattern: Snowflake implicitly coerces the
+    # numeric literal `0` to VARCHAR when the ELSE branch is a string-producing
+    # REPLACE. DuckDB requires an explicit CAST.
+    sql = (
+        'CREATE OR REPLACE TABLE "out.citytargets" AS '
+        "SELECT CASE WHEN REPLACE(v, ',', '') = '' THEN 0 "
+        "ELSE REPLACE(v, ',', '') END AS x FROM t;"
+    )
+    tx, seeds = _make_sync_pull_tree(tmp_path, sql_body=sql)
+    out = tmp_path / "proj"
+
+    result = migrate_keboola_sync_pull(
+        transformation_dir=tx,
+        output_dir=out,
+        seeds_source=seeds,
+    )
+
+    assert result.sql_translated is True
+    translated = (out / "models" / "my_task.sql").read_text()
+    # Cast inserted around the numeric literal; `TEXT` is DuckDB's preferred
+    # spelling for VARCHAR from the SQLGlot translator.
+    assert "CAST(0 AS TEXT)" in translated or "CAST(0 AS VARCHAR)" in translated
+
+
 def test_migrate_sync_pull_errors_on_missing_config(tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
-    with pytest.raises(FileNotFoundError, match="_config.yml"):
+    with pytest.raises(FileNotFoundError, match=r"_config\.yml"):
         migrate_keboola_sync_pull(
             transformation_dir=empty,
             output_dir=tmp_path / "out",

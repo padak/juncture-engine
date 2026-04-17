@@ -22,6 +22,7 @@ import duckdb
 from juncture.adapters.base import Adapter, AdapterError, MaterializationResult
 from juncture.adapters.registry import register_adapter
 from juncture.core.model import Materialization
+from juncture.parsers.sqlglot_parser import split_statements
 
 if TYPE_CHECKING:
     from juncture.core.context import TransformContext
@@ -149,7 +150,7 @@ class DuckDBAdapter(Adapter):
         # resolving against the project's target schema.
         cursor.execute(f'USE "{schema}"')
 
-        statements = _split_sql_statements(rendered_sql)
+        statements = split_statements(rendered_sql)
         t0 = time.perf_counter()
         for stmt in statements:
             if not stmt.strip():
@@ -258,93 +259,6 @@ def _build_materialization_statement(
         # downstream rendering works. Proper inlining happens in the executor.
         return f"CREATE OR REPLACE VIEW {fqn} AS ({stripped})"
     raise AdapterError(f"Unsupported materialization: {materialization}")
-
-
-def _split_sql_statements(sql: str) -> list[str]:
-    """Split a multi-statement SQL script on top-level semicolons.
-
-    Handles single-quoted strings and double-quoted identifiers so that
-    semicolons inside them are not treated as separators. Line comments
-    ``--`` and block comments ``/* ... */`` are preserved in the output
-    (DuckDB is happy to parse them back).
-    """
-    statements: list[str] = []
-    buf: list[str] = []
-    i = 0
-    n = len(sql)
-    in_single = in_double = in_line_comment = in_block_comment = False
-    while i < n:
-        c = sql[i]
-        nxt = sql[i + 1] if i + 1 < n else ""
-        if in_line_comment:
-            buf.append(c)
-            if c == "\n":
-                in_line_comment = False
-            i += 1
-            continue
-        if in_block_comment:
-            buf.append(c)
-            if c == "*" and nxt == "/":
-                buf.append(nxt)
-                in_block_comment = False
-                i += 2
-                continue
-            i += 1
-            continue
-        if in_single:
-            buf.append(c)
-            if c == "'" and nxt == "'":
-                buf.append(nxt)
-                i += 2
-                continue
-            if c == "'":
-                in_single = False
-            i += 1
-            continue
-        if in_double:
-            buf.append(c)
-            if c == '"' and nxt == '"':
-                buf.append(nxt)
-                i += 2
-                continue
-            if c == '"':
-                in_double = False
-            i += 1
-            continue
-        if c == "-" and nxt == "-":
-            in_line_comment = True
-            buf.append(c)
-            i += 1
-            continue
-        if c == "/" and nxt == "*":
-            in_block_comment = True
-            buf.append(c)
-            buf.append(nxt)
-            i += 2
-            continue
-        if c == "'":
-            in_single = True
-            buf.append(c)
-            i += 1
-            continue
-        if c == '"':
-            in_double = True
-            buf.append(c)
-            i += 1
-            continue
-        if c == ";":
-            stmt = "".join(buf).strip()
-            if stmt:
-                statements.append(stmt)
-            buf = []
-            i += 1
-            continue
-        buf.append(c)
-        i += 1
-    tail = "".join(buf).strip()
-    if tail:
-        statements.append(tail)
-    return statements
 
 
 register_adapter("duckdb", DuckDBAdapter)

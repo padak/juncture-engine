@@ -6,7 +6,7 @@ from pathlib import Path
 
 import duckdb
 
-from juncture.core.runner import RunRequest, Runner
+from juncture.core.runner import Runner, RunRequest
 
 
 def test_execute_runs_multi_statement_script(tmp_path: Path) -> None:
@@ -25,7 +25,7 @@ connections:
 """
     )
     (project / "models" / "pipeline.sql").write_text(
-        '-- Migrated from Snowflake, runs DDL directly.\n'
+        "-- Migrated from Snowflake, runs DDL directly.\n"
         'CREATE OR REPLACE TABLE "main"."stg_users" AS SELECT 1 AS id, \'Alice\' AS name;\n'
         'INSERT INTO "main"."stg_users" VALUES (2, \'Bob\');\n'
         'CREATE OR REPLACE TABLE "main"."user_count" AS SELECT COUNT(*) AS total FROM "main"."stg_users";\n'
