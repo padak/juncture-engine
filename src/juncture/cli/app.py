@@ -317,5 +317,48 @@ def migrate_keboola(
     )
 
 
+@app.command("migrate-sync-pull")
+def migrate_sync_pull(
+    source: Path = typer.Argument(
+        ...,
+        help="Directory produced by kbagent sync pull, e.g. "
+        "main/transformation/keboola.snowflake-transformation/<name>/",
+    ),
+    output: Path = typer.Option(Path("migrated-sync-pull"), "--output", "-o"),
+    seeds: Path = typer.Option(
+        ...,
+        "--seeds",
+        help="Directory with parquet seed data, as produced by "
+        "`kbagent storage unload-table --file-type parquet --download`.",
+    ),
+    duckdb_path: str = typer.Option("data/juncture.duckdb", "--duckdb-path"),
+) -> None:
+    """Convert a kbagent sync-pull transformation directory into a Juncture project."""
+    from juncture.migration import migrate_keboola_sync_pull
+
+    result = migrate_keboola_sync_pull(
+        transformation_dir=source,
+        output_dir=output,
+        seeds_source=seeds,
+        duckdb_path=duckdb_path,
+    )
+    table = Table(title=f"Migrated transformation {result.transformation_name!r}")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("SQL lines", f"{result.sql_line_count:,}")
+    table.add_row("Input seeds linked", str(result.seeds_linked))
+    table.add_row("Output tables", str(len(result.output_tables)))
+    table.add_row("Missing seeds", str(len(result.seeds_missing)))
+    console.print(table)
+    console.print(
+        Panel(
+            f"[green]Project at[/] {result.project_path}\n\n"
+            f"Next: [bold]juncture compile --project {result.project_path}[/]",
+            title="migrate-sync-pull",
+            border_style="green",
+        )
+    )
+
+
 if __name__ == "__main__":
     app()
