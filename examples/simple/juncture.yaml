@@ -1,0 +1,12 @@
+name: simple
+version: 0.1.0
+profile: local
+
+default_materialization: table
+default_schema: main
+
+connections:
+  local:
+    type: duckdb
+    path: data/simple.duckdb
+    threads: 2

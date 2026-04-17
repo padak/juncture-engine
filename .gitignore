@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg
+
+# Junction artifacts
+target/
+.junction/
+*.duckdb
+*.duckdb.wal
+logs/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+credentials.json
+service-account.json
+!examples/**/.env.example
+
+# Private Keboola internal docs (keep on disk, out of git)
+docs/priv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Temp
+tmp/
+*.tmp
+*.bak

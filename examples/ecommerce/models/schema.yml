@@ -1,0 +1,58 @@
+models:
+  - name: raw_customers
+    description: Source customers CSV snapshot.
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: email
+        tests: [not_null, unique]
+      - name: country
+        tests: [not_null]
+
+  - name: raw_orders
+    description: Source orders CSV snapshot. Includes refunds and pending orders.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships: { to: main.raw_customers, field: customer_id }
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              values: [completed, refunded, pending]
+
+  - name: fct_completed_orders
+    description: Completed orders only; primary source for revenue reporting.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: amount
+        tests: [not_null]
+
+  - name: dim_customers
+    description: Customer dimension enriched with signup tenure.
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+
+  - name: country_revenue
+    description: Revenue aggregated by country. Consumed by BI dashboards.
+    columns:
+      - name: country
+        tests: [not_null, unique]
+      - name: revenue
+        tests: [not_null]
+
+  - name: customer_segment
+    description: Customer tier (vip/regular/occasional/new) for marketing.
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: segment
+        tests:
+          - not_null
+          - accepted_values:
+              values: [vip, regular, occasional, new]

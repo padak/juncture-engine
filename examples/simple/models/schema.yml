@@ -1,0 +1,41 @@
+models:
+  - name: stg_users
+    description: Staged, deduplicated user records.
+    columns:
+      - name: id
+        description: Unique user identifier.
+        tests: [not_null, unique]
+      - name: name
+        tests: [not_null]
+      - name: email
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_orders
+    description: Staged orders with amounts in USD.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: user_id
+        tests:
+          - not_null
+          - relationships: { to: main.stg_users, field: id }
+      - name: amount
+        tests: [not_null]
+
+  - name: daily_revenue
+    description: Orders aggregated per day. Downstream dashboards read this.
+    columns:
+      - name: order_date
+        tests: [not_null, unique]
+      - name: revenue
+        tests: [not_null]
+
+  - name: customer_lifetime_value
+    description: Lifetime value per customer, joined from orders + users.
+    columns:
+      - name: user_id
+        tests: [not_null, unique]
+      - name: lifetime_value
+        tests: [not_null]
