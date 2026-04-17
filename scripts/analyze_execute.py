@@ -52,8 +52,12 @@ from pathlib import Path
 
 import networkx as nx
 
-from juncture.adapters.duckdb_adapter import split_statements
 from juncture.parsers.sqlglot_parser import extract_table_references
+
+try:
+    from juncture.parsers.sqlglot_parser import split_statements  # type: ignore[attr-defined]
+except ImportError:
+    from juncture.adapters.duckdb_adapter import _split_sql_statements as split_statements
 
 CREATE_RE = re.compile(
     r'^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?(?:TABLE|VIEW)\s+'
