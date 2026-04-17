@@ -39,21 +39,42 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def load_seeds(adapter: Adapter, seeds: list[SeedSpec], *, schema: str) -> dict[str, int]:
+def load_seeds(
+    adapter: Adapter,
+    seeds: list[SeedSpec],
+    *,
+    schema: str,
+    reuse_existing: bool = False,
+) -> dict[str, int]:
     """Materialize every seed as ``schema.<seed_name>``.
 
     Returns a mapping ``seed_name -> row_count`` for reporting.
 
     Uses a thread pool when the adapter provides ``_thread_cursor`` and
     has its ``threads`` attribute > 1. Otherwise runs serially.
+
+    When ``reuse_existing`` is True, seeds that already exist as a table or
+    view in ``schema`` are skipped (no re-load, no type inference). This is
+    a massive win when iterating on a single model: on a ~200-seed project
+    the load phase drops from minutes to seconds. The tradeoff is that if
+    the underlying parquet data changed, the stale view is used.
     """
+    if reuse_existing:
+        existing = _list_existing(adapter, schema)
+        seeds_to_load = [s for s in seeds if s.name not in existing]
+        skipped = len(seeds) - len(seeds_to_load)
+        if skipped:
+            log.info("Reusing %d existing seed(s); loading %d fresh", skipped, len(seeds_to_load))
+    else:
+        seeds_to_load = list(seeds)
+
     max_workers = _seed_parallelism(adapter)
-    if max_workers <= 1 or len(seeds) <= 1:
-        return {seed.name: _load_one(adapter, seed, schema=schema) for seed in seeds}
+    if max_workers <= 1 or len(seeds_to_load) <= 1:
+        return {seed.name: _load_one(adapter, seed, schema=schema) for seed in seeds_to_load}
 
     counts: dict[str, int] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_load_one, adapter, seed, schema=schema): seed for seed in seeds}
+        futures = {pool.submit(_load_one, adapter, seed, schema=schema): seed for seed in seeds_to_load}
         for future in as_completed(futures):
             seed = futures[future]
             try:
@@ -62,6 +83,18 @@ def load_seeds(adapter: Adapter, seeds: list[SeedSpec], *, schema: str) -> dict[
                 log.error("Seed %s failed: %s", seed.name, exc)
                 raise
     return counts
+
+
+def _list_existing(adapter: Adapter, schema: str) -> set[str]:
+    """Return names of tables/views already materialized in ``schema``."""
+    cursor = adapter._thread_cursor() if hasattr(adapter, "_thread_cursor") else None  # type: ignore[attr-defined]
+    if cursor is None:
+        return set()
+    rows = cursor.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = ?",
+        (schema,),
+    ).fetchall()
+    return {r[0] for r in rows}
 
 
 def _seed_parallelism(adapter: Adapter) -> int:

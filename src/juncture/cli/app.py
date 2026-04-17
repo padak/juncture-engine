@@ -169,6 +169,11 @@ def run(
         "--dry-run",
         help="Print the execution plan (seeds, model layers, intra-EXECUTE layers) without touching the DB.",
     ),
+    reuse_seeds: bool = typer.Option(
+        False,
+        "--reuse-seeds",
+        help="Skip re-loading (and re-inferring types for) seeds already materialized in the target schema.",
+    ),
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
@@ -181,6 +186,7 @@ def run(
         full_refresh=full_refresh,
         run_tests=run_tests,
         run_vars=run_vars,
+        reuse_seeds=reuse_seeds,
     )
     if dry_run:
         plan = Runner().plan(request)
@@ -241,17 +247,13 @@ def _render_plan(plan: DryRunReport) -> None:
     )
 
     if plan.seeds:
-        console.print(
-            f"\n[bold]Seeds[/] ({len(plan.seeds)}) — loaded in parallel before the model DAG:"
-        )
+        console.print(f"\n[bold]Seeds[/] ({len(plan.seeds)}) — loaded in parallel before the model DAG:")
         names = ", ".join(s.name for s in plan.seeds[:10])
         if len(plan.seeds) > 10:
             names += f", ... (+{len(plan.seeds) - 10} more)"
         console.print(f"  {names}")
 
-    console.print(
-        f"\n[bold]Models[/] ({len(plan.models)}) — {plan.model_layers} layer(s):"
-    )
+    console.print(f"\n[bold]Models[/] ({len(plan.models)}) — {plan.model_layers} layer(s):")
     mt = Table(show_lines=False)
     mt.add_column("Layer", justify="right")
     mt.add_column("Model")
