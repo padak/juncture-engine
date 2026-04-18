@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Juncture — DAG</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◆</span>
+    <strong id="project-name">juncture</strong>
+    <span class="sub" id="project-sub"></span>
+  </div>
+  <nav class="tabs">
+    <button data-view="dag" class="tab active">DAG</button>
+    <button data-view="runs" class="tab">Runs</button>
+  </nav>
+</header>
+
+<main>
+  <section id="view-dag" class="view active">
+    <aside class="sidebar">
+      <h2>Legend</h2>
+      <ul class="legend">
+        <li><span class="dot k-seed"></span>Seed</li>
+        <li><span class="dot k-sql"></span>SQL</li>
+        <li><span class="dot k-python"></span>Python</li>
+        <li><span class="dot s-disabled"></span>Disabled</li>
+        <li><span class="dot s-success"></span>Last run: success</li>
+        <li><span class="dot s-failed"></span>Last run: failed</li>
+        <li><span class="dot s-partial"></span>Last run: partial</li>
+      </ul>
+      <h2>Model detail</h2>
+      <div id="model-detail" class="detail-empty">Click a node in the DAG.</div>
+    </aside>
+    <div id="cy"></div>
+  </section>
+
+  <section id="view-runs" class="view">
+    <div class="runs-pane">
+      <h2>Run history</h2>
+      <table id="runs-table">
+        <thead>
+          <tr><th>Run</th><th>Started</th><th>OK</th><th>Elapsed</th><th>S</th><th>F</th><th>P</th><th>D</th></tr>
+        </thead>
+        <tbody id="runs-body"></tbody>
+      </table>
+    </div>
+    <div id="run-detail" class="detail-empty">Click a run on the left.</div>
+  </section>
+</main>
+
+<footer>
+  <span id="status-line">loading…</span>
+</footer>
+
+<script src="/assets/cytoscape.min.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>
