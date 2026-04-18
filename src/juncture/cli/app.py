@@ -13,7 +13,7 @@ from rich.table import Table
 
 from juncture._version import __version__
 from juncture.core.project import Project
-from juncture.core.runner import Runner, RunRequest
+from juncture.core.runner import DryRunReport, Runner, RunRequest
 from juncture.parsers.sqlglot_parser import translate_sql
 
 app = typer.Typer(
@@ -119,6 +119,11 @@ connections:
 def compile(
     project: Path = typer.Option(Path("."), "--project", "-p", help="Project directory."),
     output_json: bool = typer.Option(False, "--json", help="Emit DAG as JSON."),
+    dot: Path | None = typer.Option(
+        None,
+        "--dot",
+        help="Write the DAG as a Graphviz DOT file. Render with `dot -Tsvg <file> > <file>.svg`.",
+    ),
 ) -> None:
     """Parse the project, build the DAG, and show what will run."""
     project_obj = Project.load(project)
@@ -141,6 +146,17 @@ def compile(
         typer.echo(json.dumps(payload, indent=2))
         return
 
+    if dot is not None:
+        dot.parent.mkdir(parents=True, exist_ok=True)
+        _write_dag_dot(dag, dot, project_name=project_obj.config.name)
+        console.print(
+            f"[green]Wrote Graphviz DOT to[/] {dot}\n"
+            f"Render with: [bold]dot -Tsvg {dot} > {dot.with_suffix('.svg')}[/]\n"
+            f"For a denser layout on large DAGs try: "
+            f"[bold]sfdp -Tsvg -Goverlap=prism {dot} > {dot.with_suffix('.svg')}[/]"
+        )
+        return
+
     table = Table(title=f"Juncture DAG — {project_obj.config.name}")
     table.add_column("#", justify="right", style="dim")
     table.add_column("Model")
@@ -154,6 +170,36 @@ def compile(
     console.print(table)
 
 
+_DOT_COLOR = {
+    "seed": "#FFE8C8",  # warm amber — pre-DAG input
+    "sql": "#CFE8F5",  # cool blue — SQL transform
+    "python": "#D6F0D6",  # soft green — Python transform
+}
+
+
+def _write_dag_dot(dag, path: Path, *, project_name: str) -> None:
+    """Write ``dag`` as a Graphviz DOT file with colour-coded nodes by kind."""
+    lines: list[str] = [
+        f'digraph "{project_name}" {{',
+        "  rankdir=LR;",
+        "  graph [nodesep=0.2, ranksep=0.6, splines=ortho];",
+        '  node  [shape=box, style="filled,rounded", fontname="Helvetica", fontsize=10];',
+        "  edge  [arrowsize=0.5, color=gray40];",
+    ]
+    for name in dag.topological_order():
+        m = dag.model(name)
+        color = _DOT_COLOR.get(m.kind.value, "#FFFFFF")
+        label = m.name.replace('"', '\\"') + f"\\n[{m.kind.value}/{m.materialization.value}]"
+        lines.append(f'  "{m.name}" [label="{label}", fillcolor="{color}"];')
+    # Edges (depends_on -> model).
+    for name in dag.topological_order():
+        m = dag.model(name)
+        for dep in sorted(m.depends_on):
+            lines.append(f'  "{dep}" -> "{m.name}";')
+    lines.append("}")
+    path.write_text("\n".join(lines))
+
+
 @app.command()
 def run(
     project: Path = typer.Option(Path("."), "--project", "-p"),
@@ -164,6 +210,23 @@ def run(
     run_tests: bool = typer.Option(False, "--test/--no-test", help="Run data tests after models."),
     full_refresh: bool = typer.Option(False, "--full-refresh"),
     var: list[str] = typer.Option([], "--var", help="key=value vars accessible as ctx.vars()."),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the execution plan (seeds, model layers, intra-EXECUTE layers) without touching the DB.",
+    ),
+    reuse_seeds: bool = typer.Option(
+        False,
+        "--reuse-seeds",
+        help="Skip re-loading (and re-inferring types for) seeds already materialized in the target schema.",
+    ),
+    parallelism: int | None = typer.Option(
+        None,
+        "--parallelism",
+        "-P",
+        help="Override config.parallelism on every EXECUTE model (for benchmarking "
+        "without editing schema.yml). Default: respect per-model config.",
+    ),
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
@@ -176,7 +239,13 @@ def run(
         full_refresh=full_refresh,
         run_tests=run_tests,
         run_vars=run_vars,
+        reuse_seeds=reuse_seeds,
+        parallelism_override=parallelism,
     )
+    if dry_run:
+        plan = Runner().plan(request)
+        _render_plan(plan)
+        return
     report = Runner().run(request)
 
     table = Table(title=f"Run results — {report.project_name}")
@@ -219,6 +288,58 @@ def run(
 
     if not report.ok:
         raise typer.Exit(code=1)
+
+
+def _render_plan(plan: DryRunReport) -> None:
+    """Pretty-print a :class:`DryRunReport` for ``juncture run --dry-run``."""
+    console.print(
+        Panel.fit(
+            f"[bold]Dry-run plan — {plan.project_name}[/]\n"
+            f"[dim]No adapter is opened. Nothing is executed.[/]",
+            border_style="cyan",
+        )
+    )
+
+    if plan.seeds:
+        console.print(f"\n[bold]Seeds[/] ({len(plan.seeds)}) — loaded in parallel before the model DAG:")
+        names = ", ".join(s.name for s in plan.seeds[:10])
+        if len(plan.seeds) > 10:
+            names += f", ... (+{len(plan.seeds) - 10} more)"
+        console.print(f"  {names}")
+
+    console.print(f"\n[bold]Models[/] ({len(plan.models)}) — {plan.model_layers} layer(s):")
+    mt = Table(show_lines=False)
+    mt.add_column("Layer", justify="right")
+    mt.add_column("Model")
+    mt.add_column("Kind")
+    mt.add_column("Materialization")
+    mt.add_column("Depends on", overflow="fold")
+    mt.add_column("Intra-script")
+    for n in plan.models:
+        intra_str = "—"
+        if n.intra is not None:
+            intra_str = (
+                f"{n.intra.total_statements} stmts, {n.intra.layers} layer(s), "
+                f"widest={n.intra.widest_layer}, parallelism={n.intra.parallelism}"
+            )
+        mt.add_row(
+            str(n.layer),
+            n.name,
+            n.kind,
+            n.materialization or "—",
+            ", ".join(n.depends_on) or "—",
+            intra_str,
+        )
+    console.print(mt)
+
+    # Per-EXECUTE-model layer histogram so users can eyeball parallelism ceiling.
+    for n in plan.models:
+        if n.intra is None:
+            continue
+        console.print(f"\n[bold]{n.name}[/] intra-script layers:")
+        for i, size in enumerate(n.intra.layer_sizes):
+            bar = "#" * min(size, 60)
+            console.print(f"  layer {i + 1:>3}: {size:>4} {bar}")
 
 
 @app.command()
@@ -312,6 +433,233 @@ def migrate_keboola(
             f"[green]Project at[/] {result.project_path}\n\n"
             f"Next: [bold]juncture compile --project {result.project_path}[/]",
             title="migrate-keboola",
+            border_style="green",
+        )
+    )
+
+
+@app.command("migrate-sync-pull")
+def migrate_sync_pull(
+    source: Path = typer.Argument(
+        ...,
+        help="Directory produced by kbagent sync pull, e.g. "
+        "main/transformation/keboola.snowflake-transformation/<name>/",
+    ),
+    output: Path = typer.Option(Path("migrated-sync-pull"), "--output", "-o"),
+    seeds: Path = typer.Option(
+        ...,
+        "--seeds",
+        help="Directory with parquet seed data, as produced by "
+        "`kbagent storage unload-table --file-type parquet --download`.",
+    ),
+    duckdb_path: str = typer.Option("data/juncture.duckdb", "--duckdb-path"),
+    source_dialect: str = typer.Option(
+        "snowflake",
+        "--source-dialect",
+        help="Source SQL dialect (snowflake, bigquery, redshift...); use 'duckdb' to skip translation.",
+    ),
+    target_dialect: str = typer.Option("duckdb", "--target-dialect"),
+) -> None:
+    """Convert a kbagent sync-pull transformation directory into a Juncture project."""
+    from juncture.migration import migrate_keboola_sync_pull
+
+    result = migrate_keboola_sync_pull(
+        transformation_dir=source,
+        output_dir=output,
+        seeds_source=seeds,
+        duckdb_path=duckdb_path,
+        source_dialect=source_dialect,
+        target_dialect=target_dialect,
+    )
+    table = Table(title=f"Migrated transformation {result.transformation_name!r}")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("SQL lines", f"{result.sql_line_count:,}")
+    table.add_row(
+        "SQL translated", f"{source_dialect} -> {target_dialect}" if result.sql_translated else "no"
+    )
+    table.add_row("Input seeds linked", str(result.seeds_linked))
+    table.add_row("Output tables", str(len(result.output_tables)))
+    table.add_row("Missing seeds", str(len(result.seeds_missing)))
+    console.print(table)
+    console.print(
+        Panel(
+            f"[green]Project at[/] {result.project_path}\n\n"
+            f"Next: [bold]juncture compile --project {result.project_path}[/]",
+            title="migrate-sync-pull",
+            border_style="green",
+        )
+    )
+
+
+@app.command()
+def sanitize(
+    project: Path = typer.Option(
+        Path("."),
+        "--project",
+        "-p",
+        help="Juncture project directory whose models/*.sql files will be re-translated in place.",
+    ),
+    source_dialect: str = typer.Option("snowflake", "--from-dialect"),
+    target_dialect: str = typer.Option("duckdb", "--to-dialect"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Report which files would change without writing them.",
+    ),
+) -> None:
+    """Re-translate all ``models/*.sql`` files through ``translate_sql``.
+
+    Intended for projects produced by an older migration pass where Snowflake
+    SQL was copied verbatim and DuckDB chokes on dialect-specific constructs
+    (implicit VARCHAR coercion in CASE, etc.). The same translator the migrator
+    now runs by default is applied to every SQL model, statement by statement.
+    """
+    models_dir = project / "models"
+    if not models_dir.is_dir():
+        console.print(f"[red]No models/ directory at {models_dir}[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Sanitize {source_dialect} -> {target_dialect}")
+    table.add_column("Model")
+    table.add_column("Before", justify="right")
+    table.add_column("After", justify="right")
+    table.add_column("Changed", justify="center")
+
+    changed_count = 0
+    total = 0
+    for sql_file in sorted(models_dir.glob("*.sql")):
+        original = sql_file.read_text()
+        translated = translate_sql(original, read=source_dialect, write=target_dialect)
+        changed = translated != original
+        total += 1
+        if changed:
+            changed_count += 1
+        mark = "[yellow]yes[/]" if changed else "no"
+        table.add_row(sql_file.name, f"{len(original):,}", f"{len(translated):,}", mark)
+        if changed and not dry_run:
+            sql_file.write_text(translated)
+
+    console.print(table)
+    summary = f"{changed_count}/{total} model(s) updated"
+    if dry_run:
+        summary += " (dry-run, nothing written)"
+    console.print(Panel(summary, title="sanitize", border_style="green"))
+
+
+@app.command("split-execute")
+def split_execute(
+    sql_path: Path = typer.Argument(
+        ...,
+        help="Multi-statement EXECUTE SQL file to split (e.g. models/main_task.sql).",
+    ),
+    out_dir: Path = typer.Option(
+        ...,
+        "--out",
+        "-o",
+        help="Target directory for generated models. Created if missing.",
+    ),
+    source_dialect: str = typer.Option(
+        "duckdb",
+        "--source-dialect",
+        help="Dialect for SQLGlot parse (normally duckdb after sync-pull translation).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="List what would be created without writing files.",
+    ),
+) -> None:
+    """Split a multi-statement EXECUTE script into CTAS mini-models + residual.
+
+    Each ``CREATE [OR REPLACE] TABLE|VIEW X AS SELECT ...`` becomes its own
+    ``<X>.sql`` model with intra-script table references rewritten to
+    ``{{ ref('X') }}``. Statements that can't be expressed as standalone
+    CTAS (``INSERT``, ``UPDATE``, ``DELETE``, ``ALTER``, ``SET``, ``USE``)
+    land in ``_residual.sql`` with ``materialization: execute`` and
+    ``LIMIT 0`` ref hints so Juncture can infer its depends_on.
+    """
+    from juncture.migration.split_execute import SplitExecuteError, split_execute_script
+
+    sql = sql_path.read_text()
+    try:
+        result = split_execute_script(sql, dialect=source_dialect)
+    except SplitExecuteError as exc:
+        console.print(f"[red]split-execute failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    summary = Table(title=f"split-execute — {sql_path.name}")
+    summary.add_column("Model")
+    summary.add_column("Materialization")
+    summary.add_column("Source idx", justify="right")
+    for m in result.models:
+        summary.add_row(m.name, m.materialization, str(m.source_index))
+    if result.residual:
+        summary.add_row("_residual", "execute", "—")
+    console.print(summary)
+
+    if dry_run:
+        console.print(
+            Panel(
+                f"Dry-run: would create {len(result.models)} model(s)"
+                + (" + _residual" if result.residual else "")
+                + f" in {out_dir}",
+                title="split-execute",
+                border_style="cyan",
+            )
+        )
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for m in result.models:
+        body = m.body.rstrip(";").strip()
+        (out_dir / f"{m.name}.sql").write_text(
+            f"-- Auto-generated by `juncture split-execute` from {sql_path.name}.\n"
+            f"-- Source statement index: {m.source_index}\n"
+            f"{body}\n"
+        )
+
+    schema_entries: list[str] = []
+    for m in result.models:
+        schema_entries.append(
+            f"  - name: {m.name}\n"
+            f"    materialization: {m.materialization}\n"
+            f"    config:\n"
+            f"      generated_by: split-execute\n"
+            f"      source_index: {m.source_index}\n"
+        )
+
+    if result.residual:
+        # Prepend LIMIT 0 ref() lines so Juncture infers depends_on from
+        # the residual body. LIMIT 0 is a metadata-only scan in DuckDB.
+        ref_loads = "".join(
+            f"SELECT 1 FROM {{{{ ref('{name}') }}}} LIMIT 0;\n" for name in result.residual_depends_on
+        )
+        (out_dir / "_residual.sql").write_text(
+            f"-- Auto-generated by `juncture split-execute` from {sql_path.name}.\n"
+            f"-- Non-CTAS statements (INSERT/UPDATE/DELETE/DDL/DML).\n"
+            f"-- LIMIT 0 ref() hints seed Juncture's DAG depends_on.\n"
+            f"{ref_loads}"
+            f"\n"
+            f"{result.residual}\n"
+        )
+        schema_entries.append(
+            "  - name: _residual\n"
+            "    materialization: execute\n"
+            "    config:\n"
+            "      generated_by: split-execute\n"
+        )
+
+    (out_dir / "schema.yml").write_text("models:\n" + "\n".join(schema_entries))
+
+    console.print(
+        Panel(
+            f"[green]Split complete:[/]\n"
+            f"  {len(result.models)} CTAS model(s) written to {out_dir}\n"
+            f"  {'1 residual (depends on ' + str(len(result.residual_depends_on)) + ' models)' if result.residual else 'no residual'}\n\n"
+            f"Next: [bold]juncture compile --project <project>[/] to see the new DAG.",
+            title="split-execute",
             border_style="green",
         )
     )

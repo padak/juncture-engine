@@ -18,12 +18,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import networkx as nx
+
 from juncture.adapters.base import Adapter
 from juncture.adapters.registry import get_adapter
 from juncture.core.dag import DAG
 from juncture.core.executor import ExecutionResult, Executor
+from juncture.core.model import Materialization, Model, ModelKind
 from juncture.core.project import Project, ProjectError
 from juncture.core.seeds import load_seeds
+from juncture.parsers.sqlglot_parser import build_statement_dag
 from juncture.testing.runner import TestResult, TestRunner
 
 log = logging.getLogger(__name__)
@@ -60,6 +64,45 @@ class RunRequest:
     run_tests: bool = False
     fail_fast: bool = True
     run_vars: dict[str, Any] = field(default_factory=dict)
+    reuse_seeds: bool = False
+    parallelism_override: int | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class IntraScriptStats:
+    """Plan-time introspection of an EXECUTE model's multi-statement body.
+
+    Produced by :meth:`Runner.plan` so users can see what an EXECUTE model
+    would do without running it. Mirrors the numbers
+    ``scripts/analyze_execute.py`` prints on a standalone file, but scoped
+    to the model inside a real project.
+    """
+
+    total_statements: int
+    layers: int
+    widest_layer: int
+    layer_sizes: list[int]
+    parallelism: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class DryRunNode:
+    """One node in the plan: a seed or a model."""
+
+    name: str
+    kind: str  # "seed" | "sql" | "python"
+    materialization: str | None  # None for seeds
+    depends_on: list[str]
+    layer: int | None = None  # None for seeds (loaded before the model DAG)
+    intra: IntraScriptStats | None = None
+
+
+@dataclass(kw_only=True)
+class DryRunReport:
+    project_name: str
+    seeds: list[DryRunNode]
+    models: list[DryRunNode]
+    model_layers: int
 
 
 @dataclass(kw_only=True)
@@ -84,12 +127,19 @@ class Runner:
         if request.select or request.exclude:
             dag = self._apply_selectors(dag, request.select, request.exclude)
 
+        _apply_parallelism_override(project.models, request.parallelism_override)
+
         schema = project.config.default_schema
         with adapter:
             # Load seeds before the DAG runs so models can ref() them.
             if project.seeds:
                 log.info("Loading %d seed(s)", len(project.seeds))
-                load_seeds(adapter, project.seeds, schema=schema)
+                load_seeds(
+                    adapter,
+                    project.seeds,
+                    schema=schema,
+                    reuse_existing=request.reuse_seeds,
+                )
 
             executor = Executor(
                 adapter=adapter,
@@ -105,6 +155,80 @@ class Runner:
                 tests = TestRunner(adapter=adapter, schema=schema).run(project, dag)
 
         return RunReport(project_name=project.config.name, models=models_result, tests=tests)
+
+    def plan(self, request: RunRequest) -> DryRunReport:
+        """Return the execution plan for ``request`` without touching the DB.
+
+        No adapter is opened, no seed data is loaded, no SQL is executed.
+        We still load the project, apply selectors, compute DAG layers,
+        and — for EXECUTE models — parse the SQL body into its intra-script
+        DAG so the returned plan reflects both levels of parallelism the
+        real run would use.
+
+        The dialect for intra-script DAG building is fixed to ``duckdb``.
+        It only matters for SQLGlot's parse choices, and even then we fall
+        back to regex detection for statements the parser rejects.
+        """
+        project = Project.load(request.project_path)
+
+        dag = project.dag()
+        if request.select or request.exclude:
+            dag = self._apply_selectors(dag, request.select, request.exclude)
+
+        _apply_parallelism_override(project.models, request.parallelism_override)
+
+        seed_nodes = [
+            DryRunNode(
+                name=seed.name,
+                kind="seed",
+                materialization=None,
+                depends_on=[],
+            )
+            for seed in project.seeds
+        ]
+
+        # Seeds live in project.models with ModelKind.SEED so ref() resolution
+        # works, but they're loaded *before* the DAG and shouldn't appear in
+        # the model-layer listing. Restrict the DAG to non-seed nodes for
+        # layer computation; seeds are already reported via plan.seeds.
+        by_name: dict[str, Model] = {m.name: m for m in project.models}
+        model_names = {
+            name
+            for name in dag.nodes
+            if (m := by_name.get(name)) is not None and m.kind is not ModelKind.SEED
+        }
+        model_dag = dag.subgraph(model_names) if model_names else dag
+
+        model_nodes: list[DryRunNode] = []
+        layers = list(model_dag.layers()) if model_names else []
+        for layer_idx, layer in enumerate(layers):
+            for name in layer:
+                model = by_name.get(name)
+                if model is None:
+                    continue
+                model_nodes.append(
+                    DryRunNode(
+                        name=model.name,
+                        kind=model.kind.value,
+                        materialization=model.materialization.value,
+                        # Strip seed names from depends_on for readability —
+                        # the seed list is already shown separately.
+                        depends_on=sorted(
+                            d
+                            for d in model.depends_on
+                            if (dm := by_name.get(d)) is None or dm.kind is not ModelKind.SEED
+                        ),
+                        layer=layer_idx + 1,
+                        intra=_intra_script_stats(model),
+                    )
+                )
+
+        return DryRunReport(
+            project_name=project.config.name,
+            seeds=seed_nodes,
+            models=model_nodes,
+            model_layers=len(layers),
+        )
 
     def _build_adapter(self, project: Project, connection: str | None) -> Adapter:
         conn_name = connection or project.config.profile or "default"
@@ -123,3 +247,48 @@ class Runner:
         if not selected:
             raise ProjectError("Selector produced an empty set of models")
         return dag.subgraph(selected)
+
+
+def _apply_parallelism_override(models: list[Model], override: int | None) -> None:
+    """Apply a CLI ``--parallelism`` override to every EXECUTE model in place.
+
+    The override *replaces* per-model ``config.parallelism`` when set, so
+    benchmark runs can sweep ``--parallelism 1 / 2 / 4 / 8`` without
+    touching ``schema.yml``. An unset override (``None``) leaves each
+    model's own config untouched.
+    """
+    if override is None:
+        return
+    if override < 1:
+        raise ValueError(f"--parallelism must be >= 1 (got {override})")
+    for model in models:
+        if model.materialization is Materialization.EXECUTE:
+            model.config["parallelism"] = override
+
+
+def _intra_script_stats(model: Model) -> IntraScriptStats | None:
+    """Return intra-script stats for an EXECUTE model, else ``None``.
+
+    Non-SQL or non-EXECUTE models get no intra-stats — their execution
+    plan is just "one layer, one model".
+    """
+    if model.kind is not ModelKind.SQL or model.materialization is not Materialization.EXECUTE:
+        return None
+    if not model.sql:
+        return None
+    graph = build_statement_dag(model.sql)
+    if graph.number_of_nodes() == 0:
+        return None
+    layers = list(nx.topological_generations(graph))
+    parallelism = 1
+    try:
+        parallelism = max(1, int(model.config.get("parallelism", 1) or 1))
+    except (TypeError, ValueError):
+        parallelism = 1
+    return IntraScriptStats(
+        total_statements=graph.number_of_nodes(),
+        layers=len(layers),
+        widest_layer=max((len(layer) for layer in layers), default=0),
+        layer_sizes=[len(layer) for layer in layers],
+        parallelism=parallelism,
+    )

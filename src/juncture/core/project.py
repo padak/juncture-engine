@@ -135,10 +135,17 @@ class ProjectConfig:
 
 @dataclass(kw_only=True)
 class SeedSpec:
-    """A CSV seed file to be loaded as a source table."""
+    """A seed (source table) loaded before the DAG runs.
+
+    ``format`` is ``"csv"`` for a single ``.csv`` file, ``"parquet"`` for a
+    directory of sliced ``.parquet`` files. In the parquet case ``path``
+    points to the directory; DuckDB reads it via
+    ``read_parquet('<path>/*.parquet')``.
+    """
 
     name: str
     path: Path
+    format: str = "csv"
     schema_overrides: dict[str, str] = field(default_factory=dict)
 
 
@@ -184,31 +191,91 @@ class Project:
         if not models_root.exists():
             return
         for schema_file in models_root.rglob("schema.yml"):
-            data = yaml.safe_load(schema_file.read_text()) or {}
+            try:
+                data = yaml.safe_load(schema_file.read_text()) or {}
+            except yaml.YAMLError as exc:
+                # Wrap PyYAML's deep traceback with a user-actionable message.
+                # Most common offender: tab characters used for indentation
+                # (YAML forbids them) after copy/paste into editors that
+                # auto-convert indentation.
+                raise ProjectError(
+                    f"Failed to parse {schema_file.relative_to(self.root)}: {exc}. "
+                    f"Tip: YAML does not allow tab characters for indentation; "
+                    f"check the file with `cat -A {schema_file.relative_to(self.root)}` "
+                    f"and replace any ^I markers with spaces."
+                ) from exc
             for model_decl in data.get("models", []):
                 self.schemas[model_decl["name"]] = model_decl
 
     def _discover_seeds(self) -> list[SeedSpec]:
+        """Discover seeds under ``seeds_path``.
+
+        Recognises two layouts:
+
+        * ``seeds/<name>.csv`` -- a single CSV file.
+        * ``seeds/<sub>/<name>/*.parquet`` -- a directory of Parquet slices.
+          The seed name is the directory's relative path joined with ``.``
+          (so ``seeds/in-c-db/carts/`` becomes seed ``in-c-db.carts``).
+
+        Symlinked directories are followed so that migrations can link one
+        parquet directory under multiple destination aliases without
+        copying data.
+        """
         seeds_root = self.root / self.config.seeds_path
         if not seeds_root.exists():
             return []
-        specs: list[SeedSpec] = []
         schema_overrides: dict[str, dict[str, str]] = {}
         schema_file = seeds_root / "schema.yml"
         if schema_file.exists():
             data = yaml.safe_load(schema_file.read_text()) or {}
             for seed in data.get("seeds", []):
                 schema_overrides[seed["name"]] = seed.get("columns", {})
-        for csv_file in sorted(seeds_root.rglob("*.csv")):
+
+        parquet_dirs: set[Path] = set()
+        csv_files: set[Path] = set()
+        # os.walk with followlinks=True reaches parquet files inside
+        # symlinked directories (Path.rglob does not).
+        for dirpath, _dirnames, filenames in os.walk(seeds_root, followlinks=True):
+            for fn in filenames:
+                full = Path(dirpath) / fn
+                if fn.endswith(".parquet"):
+                    parquet_dirs.add(full.parent)
+                elif fn.endswith(".csv"):
+                    csv_files.add(full)
+
+        specs: list[SeedSpec] = []
+        for parquet_dir in sorted(parquet_dirs):
+            name = self._seed_name_for_dir(parquet_dir, seeds_root)
+            specs.append(
+                SeedSpec(
+                    name=name,
+                    path=parquet_dir,
+                    format="parquet",
+                    schema_overrides=schema_overrides.get(name, {}),
+                )
+            )
+        parquet_names = {s.name for s in specs}
+        for csv_file in sorted(csv_files):
             name = csv_file.stem
+            if name in parquet_names:
+                continue
             specs.append(
                 SeedSpec(
                     name=name,
                     path=csv_file,
+                    format="csv",
                     schema_overrides=schema_overrides.get(name, {}),
                 )
             )
         return specs
+
+    @staticmethod
+    def _seed_name_for_dir(parquet_dir: Path, seeds_root: Path) -> str:
+        rel = parquet_dir.relative_to(seeds_root)
+        # For a layout `seeds/<bucket>/<table>/` the logical name is
+        # "<bucket>.<table>" so that migrated Snowflake SQL referring to
+        # quoted identifiers like "in.c-db.carts" resolves correctly.
+        return ".".join(rel.parts) if rel.parts else parquet_dir.name
 
     def _discover_custom_tests(self) -> list[CustomTestSpec]:
         tests_root = self.root / self.config.tests_path

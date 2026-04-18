@@ -24,6 +24,11 @@ class Materialization(StrEnum):
     VIEW = "view"
     INCREMENTAL = "incremental"
     EPHEMERAL = "ephemeral"
+    # Raw multi-statement SQL: the adapter runs the body as-is, splitting on
+    # semicolons. Used when migrating a Snowflake transformation that already
+    # contains its own CREATE OR REPLACE / INSERT DDL and we don't want to
+    # rewrite it into a single SELECT (yet).
+    EXECUTE = "execute"
 
 
 @dataclass(frozen=True, kw_only=True)

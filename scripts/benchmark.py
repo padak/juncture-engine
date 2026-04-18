@@ -19,7 +19,7 @@ from pathlib import Path
 
 import duckdb
 
-from juncture.core.runner import RunRequest, Runner
+from juncture.core.runner import Runner, RunRequest
 
 logging.basicConfig(level=logging.WARNING)
 

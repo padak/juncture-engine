@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+import networkx as nx
 import sqlglot
 from sqlglot import exp
 
@@ -89,16 +90,188 @@ def translate_sql(sql: str, *, read: str, write: str) -> str:
 
     Works for the typical DuckDB <-> Snowflake <-> BigQuery <-> Postgres matrix
     for the subset of SQL we support (SELECT, CTE, JOIN, window, most scalars).
-    Translation is intentionally a best effort: we return the output even if
-    some constructs pass through verbatim.
+
+    Multi-statement scripts are split on top-level semicolons, translated per
+    statement, and rejoined. Statements SQLGlot cannot parse are passed through
+    verbatim — migrated Snowflake bodies often contain dialect-specific syntax
+    (UNPIVOT, AT TIME ZONE, QUALIFY, ``::`` casts) where a verbatim fallback is
+    safer than failing the whole body.
+
+    When translating to ``duckdb`` the output is additionally run through
+    :func:`harmonize_case_types` so Snowflake's implicit VARCHAR coercion in
+    CASE expressions gets explicit ``CAST(n AS VARCHAR)`` wrappers DuckDB
+    requires.
     """
-    if read == write:
+    if read == write and write != "duckdb":
         return sql
-    try:
-        parsed = sqlglot.parse_one(sql, read=read)
-    except sqlglot.errors.ParseError as exc:
-        raise ValueError(f"Cannot parse SQL in dialect {read!r}: {exc}") from exc
-    return parsed.sql(dialect=write)
+
+    statements = split_statements(sql) or [sql]
+    translated: list[str] = []
+    for stmt in statements:
+        stripped = stmt.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = sqlglot.parse_one(stripped, read=read)
+        except sqlglot.errors.ParseError:
+            # Fallback: SQLGlot couldn't parse it. Pass through verbatim rather
+            # than failing the whole body; downstream DuckDB will surface a
+            # precise error if the statement is actually broken.
+            translated.append(stripped)
+            continue
+        # parse_one is typed as sqlglot.Expr (a broader base) but always returns
+        # an Expression subclass at runtime; narrow explicitly for mypy.
+        assert isinstance(parsed, exp.Expression)
+        if write == "duckdb":
+            harmonize_case_types(parsed)
+        translated.append(parsed.sql(dialect=write))
+    return ";\n".join(translated)
+
+
+# --- CASE type harmonization (Snowflake implicit VARCHAR coerce -> DuckDB explicit) ---
+
+# Expression classes whose return type is unambiguously a string.
+_STRING_PRODUCERS: tuple[type[exp.Expression], ...] = (
+    exp.Concat,
+    exp.DPipe,
+    exp.Substring,
+    exp.Upper,
+    exp.Lower,
+    exp.Initcap,
+    exp.Trim,
+    exp.Replace,
+    exp.RegexpReplace,
+    exp.Pad,
+    exp.Left,
+    exp.Right,
+    exp.Chr,
+    exp.Repeat,
+    exp.ToChar,
+)
+
+# Expression classes whose return type is unambiguously numeric.
+_NUMERIC_PRODUCERS: tuple[type[exp.Expression], ...] = (
+    exp.Add,
+    exp.Sub,
+    exp.Mul,
+    exp.Div,
+    exp.Mod,
+    exp.Pow,
+    exp.Neg,
+    exp.Abs,
+    exp.Round,
+    exp.Ceil,
+    exp.Floor,
+    exp.Sqrt,
+    exp.Length,
+)
+
+
+def _branch_kind(node: exp.Expression | None) -> str:
+    """Classify ``node`` as ``STRING``, ``NUMERIC``, ``NULL`` or ``UNKNOWN``.
+
+    Only makes a call when the answer is unambiguous from syntax alone (literal,
+    explicit CAST, or a function whose return type is fixed). Column references,
+    subqueries, and user-defined functions resolve to ``UNKNOWN`` because we
+    don't annotate types against a schema.
+    """
+    if node is None or isinstance(node, exp.Null):
+        return "NULL"
+    if isinstance(node, exp.Literal):
+        return "STRING" if node.is_string else "NUMERIC"
+    if isinstance(node, exp.Cast):
+        target = node.args.get("to")
+        if isinstance(target, exp.DataType):
+            if target.this in (
+                exp.DataType.Type.VARCHAR,
+                exp.DataType.Type.TEXT,
+                exp.DataType.Type.CHAR,
+                exp.DataType.Type.NCHAR,
+                exp.DataType.Type.NVARCHAR,
+            ):
+                return "STRING"
+            if target.this in (
+                exp.DataType.Type.INT,
+                exp.DataType.Type.BIGINT,
+                exp.DataType.Type.SMALLINT,
+                exp.DataType.Type.TINYINT,
+                exp.DataType.Type.DECIMAL,
+                exp.DataType.Type.DOUBLE,
+                exp.DataType.Type.FLOAT,
+            ):
+                return "NUMERIC"
+        return "UNKNOWN"
+    if isinstance(node, _STRING_PRODUCERS):
+        return "STRING"
+    if isinstance(node, _NUMERIC_PRODUCERS):
+        return "NUMERIC"
+    if isinstance(node, exp.Coalesce):
+        kinds = {_branch_kind(arg) for arg in [node.this, *(node.args.get("expressions") or [])]}
+        kinds.discard("NULL")
+        if kinds == {"STRING"}:
+            return "STRING"
+        if kinds == {"NUMERIC"}:
+            return "NUMERIC"
+        return "UNKNOWN"
+    if isinstance(node, exp.Case):
+        return _case_kind(node)
+    return "UNKNOWN"
+
+
+def _case_kind(case_node: exp.Case) -> str:
+    """Classify an entire CASE by the union of its branches."""
+    branches: list[exp.Expression] = []
+    for if_node in case_node.args.get("ifs") or []:
+        branch = if_node.args.get("true")
+        if branch is not None:
+            branches.append(branch)
+    default = case_node.args.get("default")
+    if default is not None:
+        branches.append(default)
+    kinds = {_branch_kind(b) for b in branches}
+    kinds.discard("NULL")
+    if kinds == {"STRING"}:
+        return "STRING"
+    if kinds == {"NUMERIC"}:
+        return "NUMERIC"
+    return "UNKNOWN"
+
+
+def harmonize_case_types(tree: exp.Expression) -> exp.Expression:
+    """Wrap numeric literals in ``CAST(n AS VARCHAR)`` when a CASE mixes them
+    with string-producing branches.
+
+    Snowflake auto-coerces ``THEN 0`` to ``'0'`` when other branches are
+    VARCHAR; DuckDB is strict and raises ``BinderException: Cannot mix values
+    of type VARCHAR and INTEGER_LITERAL``. We fix the literal side because
+    that's where the fix is trivially safe — we know its value can always be
+    rendered as a string. We deliberately do **not** cast non-literal numeric
+    expressions (column refs, arithmetic) because we can't know whether the
+    user intended the result to be string or numeric.
+
+    Mutates ``tree`` in place and also returns it for chaining.
+    """
+    varchar = exp.DataType.build("VARCHAR")
+    for case in list(tree.find_all(exp.Case)):
+        branches: list[exp.Expression] = []
+        for if_node in case.args.get("ifs") or []:
+            branch = if_node.args.get("true")
+            if branch is not None:
+                branches.append(branch)
+        default = case.args.get("default")
+        if default is not None:
+            branches.append(default)
+
+        kinds = {_branch_kind(b) for b in branches}
+        kinds.discard("NULL")
+        kinds.discard("UNKNOWN")
+        if kinds != {"STRING", "NUMERIC"}:
+            continue
+
+        for branch in branches:
+            if isinstance(branch, exp.Literal) and not branch.is_string:
+                branch.replace(exp.Cast(this=branch.copy(), to=varchar.copy()))
+    return tree
 
 
 def extract_table_references(sql: str, *, dialect: str = "duckdb") -> set[str]:
@@ -117,3 +290,208 @@ def extract_table_references(sql: str, *, dialect: str = "duckdb") -> set[str]:
         for table in tree.find_all(exp.Table)
         if table.name and not table.db  # skip fully-qualified foreign references
     }
+
+
+def split_statements(sql: str) -> list[str]:
+    """Split a multi-statement SQL script on top-level semicolons.
+
+    Handles single-quoted strings and double-quoted identifiers so that
+    semicolons inside them are not treated as separators. Line comments
+    ``--`` and block comments ``/* ... */`` are preserved in the output
+    (DuckDB is happy to parse them back).
+
+    Kept as a hand-rolled scanner rather than delegating to
+    :func:`sqlglot.parse` so migrated Snowflake scripts that SQLGlot can't
+    fully parse still split cleanly into per-statement chunks.
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(sql)
+    in_single = in_double = in_line_comment = in_block_comment = False
+    while i < n:
+        c = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        if in_line_comment:
+            buf.append(c)
+            if c == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+        if in_block_comment:
+            buf.append(c)
+            if c == "*" and nxt == "/":
+                buf.append(nxt)
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_single:
+            buf.append(c)
+            if c == "'" and nxt == "'":
+                buf.append(nxt)
+                i += 2
+                continue
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            buf.append(c)
+            if c == '"' and nxt == '"':
+                buf.append(nxt)
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "-" and nxt == "-":
+            in_line_comment = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == "/" and nxt == "*":
+            in_block_comment = True
+            buf.append(c)
+            buf.append(nxt)
+            i += 2
+            continue
+        if c == "'":
+            in_single = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == ";":
+            stmt = "".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
+# --- intra-script statement DAG (used by parallel EXECUTE + split-execute tools) ---
+
+# Regex fallback for statements SQLGlot can't parse. Permissive enough to accept
+# quoted identifiers with dots (``"in.c-db.carts"``) and dashes (``"oz-provize"``)
+# that migrated Snowflake scripts routinely use.
+_CREATE_OUT_RE = re.compile(
+    r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?"
+    r'(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([A-Za-z0-9_.\-]+)"?',
+    re.IGNORECASE,
+)
+_INSERT_OUT_RE = re.compile(
+    r'^\s*INSERT\s+(?:OR\s+(?:REPLACE|IGNORE)\s+)?INTO\s+"?([A-Za-z0-9_.\-]+)"?',
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class StatementNode:
+    """One parsed statement inside a multi-statement script.
+
+    Used as the node payload in :func:`build_statement_dag`. ``output`` is the
+    name of the table/view the statement writes (``CREATE TABLE X`` /
+    ``INSERT INTO X``), or ``None`` for read-only / dialect-only statements
+    (e.g. ``SET``, ``USE``, ``BEGIN``). ``inputs`` are the single-part table
+    names referenced by the statement — fully-qualified ``schema.table``
+    references are skipped by :func:`extract_table_references`.
+    """
+
+    index: int
+    sql: str
+    output: str | None
+    inputs: frozenset[str]
+
+
+def detect_output_table(stmt: str, *, dialect: str = "duckdb") -> str | None:
+    """Return the name of the table a DDL/DML statement writes, or ``None``.
+
+    Recognised shapes:
+
+    * ``CREATE [OR REPLACE] [TEMP] TABLE|VIEW [IF NOT EXISTS] <name> ...``
+    * ``INSERT [OR REPLACE|IGNORE] INTO <name> ...``
+
+    AST first (via SQLGlot); regex fallback for statements the parser
+    rejects. Quoted identifiers keep their inner content (``"in.c-db.carts"``
+    → ``in.c-db.carts``) so names match what ``extract_table_references``
+    returns on downstream reads.
+    """
+    try:
+        parsed = sqlglot.parse_one(stmt, read=dialect)
+    except sqlglot.errors.ParseError:
+        parsed = None
+
+    if isinstance(parsed, exp.Create):
+        kind = (parsed.args.get("kind") or "").upper()
+        if kind in ("TABLE", "VIEW"):
+            target = parsed.this
+            if isinstance(target, exp.Schema):
+                target = target.this
+            if isinstance(target, exp.Table) and target.name:
+                return target.name
+    if isinstance(parsed, exp.Insert):
+        target = parsed.this
+        if isinstance(target, exp.Schema):
+            target = target.this
+        if isinstance(target, exp.Table) and target.name:
+            return target.name
+
+    for pat in (_CREATE_OUT_RE, _INSERT_OUT_RE):
+        m = pat.match(stmt)
+        if m:
+            return m.group(1)
+    return None
+
+
+def build_statement_dag(sql: str, *, dialect: str = "duckdb") -> nx.DiGraph:
+    """Build the intra-script dependency DAG of a multi-statement SQL body.
+
+    The returned graph has one node per non-empty statement, keyed by its
+    0-based index, with a :class:`StatementNode` attached as ``node["node"]``.
+    An edge ``u -> v`` means statement ``u`` produced a table that statement
+    ``v`` reads; only the *latest* producer before a read wires the edge, so
+    scripts that rewrite the same table repeatedly still linearise correctly.
+
+    Inputs that were never produced by an earlier statement (i.e. external
+    tables — seeds, source data) contribute no edge: they are implicit roots
+    of the layer-0 set.
+
+    Callers typically feed the result to :func:`networkx.topological_generations`
+    to iterate parallelisable layers.
+    """
+    graph: nx.DiGraph = nx.DiGraph()
+    produced_by: dict[str, int] = {}
+
+    for idx, stmt in enumerate(split_statements(sql)):
+        output = detect_output_table(stmt, dialect=dialect)
+        # extract_table_references walks every exp.Table node, including the
+        # CREATE/INSERT target — strip it so INSERT INTO t SELECT * FROM t
+        # doesn't turn into a spurious self-input.
+        raw_inputs = extract_table_references(stmt, dialect=dialect)
+        if output is not None:
+            raw_inputs = raw_inputs - {output}
+        inputs = frozenset(raw_inputs)
+        node = StatementNode(index=idx, sql=stmt, output=output, inputs=inputs)
+        graph.add_node(idx, node=node)
+        for inp in inputs:
+            src = produced_by.get(inp)
+            if src is not None and src != idx:
+                graph.add_edge(src, idx, via=inp)
+        if output is not None:
+            produced_by[output] = idx
+
+    return graph

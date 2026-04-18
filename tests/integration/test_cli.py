@@ -59,7 +59,9 @@ def test_docs_writes_manifest(tmp_path: Path) -> None:
 
 
 def test_translate_prints_sql() -> None:
-    result = runner.invoke(app, ["translate", "SELECT TO_VARCHAR(42)", "--from", "snowflake", "--to", "duckdb"])
+    result = runner.invoke(
+        app, ["translate", "SELECT TO_VARCHAR(42)", "--from", "snowflake", "--to", "duckdb"]
+    )
     assert result.exit_code == 0
     # Output is a Rich panel; body contains the translated expression.
     assert "SELECT" in result.stdout.upper()
