@@ -14,6 +14,11 @@ components (`snowflake-transformation`, `python-transformation`,
 and Python share one DAG, data tests are first-class, and every
 workflow is callable from a stable JSON CLI built for agents.
 
+<p align="center">
+  <img src="docs/images/web1.png" alt="Juncture web UI — DAG tab with Metadata sidebar showing governance, reliability sparkline, PII ring propagation" width="880">
+  <br><em>The DAG tab: shape encodes kind (seed / SQL / Python), border encodes last-run status, the pink ring propagates PII from flagged seeds. Sidebar shows Metadata + Source + Schema + Tests for the selected model.</em>
+</p>
+
 ## Install
 
 ```bash
@@ -97,6 +102,12 @@ markdown-it. Tabs:
 - **Runs** — history table + per-model drawer with every
   `statement_errors` entry classified into buckets (type_mismatch /
   conversion / missing_object / …).
+
+<p align="center">
+  <img src="docs/images/web2.png" alt="Juncture web UI — Runs tab with history table and per-model drawer expanded to show data tests" width="880">
+  <br><em>The Runs tab: click any model row to expand its drawer with statement-level errors and the data tests filtered to that model.</em>
+</p>
+
 - **Seeds** — format, inferred types, sentinel cache, parquet file
   count.
 - **Portfolio** — model × owner × SLA × 30-day attainment with
