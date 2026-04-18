@@ -174,6 +174,13 @@ def run(
         "--reuse-seeds",
         help="Skip re-loading (and re-inferring types for) seeds already materialized in the target schema.",
     ),
+    parallelism: int | None = typer.Option(
+        None,
+        "--parallelism",
+        "-P",
+        help="Override config.parallelism on every EXECUTE model (for benchmarking "
+        "without editing schema.yml). Default: respect per-model config.",
+    ),
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
@@ -187,6 +194,7 @@ def run(
         run_tests=run_tests,
         run_vars=run_vars,
         reuse_seeds=reuse_seeds,
+        parallelism_override=parallelism,
     )
     if dry_run:
         plan = Runner().plan(request)

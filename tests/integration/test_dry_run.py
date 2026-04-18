@@ -71,6 +71,26 @@ def test_dry_run_exposes_intra_script_layers(tmp_path: Path) -> None:
     assert model.intra.parallelism == 4
 
 
+def test_parallelism_cli_override_wins_over_schema(tmp_path: Path) -> None:
+    # schema.yml says parallelism=2, but the CLI --parallelism=8 override
+    # takes precedence. Plan reflects 8, not 2.
+    project = _scaffold_execute(tmp_path, parallelism=2)
+    plan = Runner().plan(
+        RunRequest(project_path=project, parallelism_override=8)
+    )
+    assert plan.models[0].intra is not None
+    assert plan.models[0].intra.parallelism == 8
+
+
+def test_parallelism_override_none_keeps_schema_value(tmp_path: Path) -> None:
+    project = _scaffold_execute(tmp_path, parallelism=3)
+    plan = Runner().plan(
+        RunRequest(project_path=project, parallelism_override=None)
+    )
+    assert plan.models[0].intra is not None
+    assert plan.models[0].intra.parallelism == 3
+
+
 def test_dry_run_plain_sql_models_have_no_intra(tmp_path: Path) -> None:
     # Normal `table` materialization: one statement per model, no intra DAG.
     project = tmp_path / "dryrun_table"

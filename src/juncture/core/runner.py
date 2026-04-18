@@ -65,6 +65,7 @@ class RunRequest:
     fail_fast: bool = True
     run_vars: dict[str, Any] = field(default_factory=dict)
     reuse_seeds: bool = False
+    parallelism_override: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -126,6 +127,8 @@ class Runner:
         if request.select or request.exclude:
             dag = self._apply_selectors(dag, request.select, request.exclude)
 
+        _apply_parallelism_override(project.models, request.parallelism_override)
+
         schema = project.config.default_schema
         with adapter:
             # Load seeds before the DAG runs so models can ref() them.
@@ -171,6 +174,8 @@ class Runner:
         dag = project.dag()
         if request.select or request.exclude:
             dag = self._apply_selectors(dag, request.select, request.exclude)
+
+        _apply_parallelism_override(project.models, request.parallelism_override)
 
         seed_nodes = [
             DryRunNode(
@@ -240,6 +245,23 @@ class Runner:
         if not selected:
             raise ProjectError("Selector produced an empty set of models")
         return dag.subgraph(selected)
+
+
+def _apply_parallelism_override(models: list[Model], override: int | None) -> None:
+    """Apply a CLI ``--parallelism`` override to every EXECUTE model in place.
+
+    The override *replaces* per-model ``config.parallelism`` when set, so
+    benchmark runs can sweep ``--parallelism 1 / 2 / 4 / 8`` without
+    touching ``schema.yml``. An unset override (``None``) leaves each
+    model's own config untouched.
+    """
+    if override is None:
+        return
+    if override < 1:
+        raise ValueError(f"--parallelism must be >= 1 (got {override})")
+    for model in models:
+        if model.materialization is Materialization.EXECUTE:
+            model.config["parallelism"] = override
 
 
 def _intra_script_stats(model: Model) -> IntraScriptStats | None:
