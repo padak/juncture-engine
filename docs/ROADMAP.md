@@ -197,10 +197,15 @@ adapter work — neither blocks the other.
       endpoint that bundles manifest + source + seeds + latest run
       into a single LLM-ingestible JSON (exposed via new "LLM kb"
       button in the DAG toolbar).
-- [ ] **M4 — P2 governance**: `schema.yml` gains `owner` / `team` /
+- [x] **M4 — P2 governance**: `schema.yml` gains `owner` / `team` /
       `criticality` / `sla` / `docs`; Portfolio tab, data contracts
       view, PII / retention badges, reliability dashboard.
-      (~3 engineer-days; two PRs — schema change first, UI second.)
+      Landed as two PRs (schema first, UI second). UI exposes
+      Portfolio + Reliability top-bar tabs, inline PII ring
+      propagation in the DAG, governance block in the Metadata tab,
+      contract endpoint with "would break" downstream list, and
+      long-form docs rendered via the markdown-it instance vendored
+      for M2.
 
 ## Phase 2 — Production backends + Keboola component
 

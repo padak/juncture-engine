@@ -21,6 +21,10 @@
     llmKb:         () => fetch("/api/llm-knowledge").then(r => r.json()),
     model:         (name) => fetch(`/api/models/${encodeURIComponent(name)}`).then(r => r.json()),
     modelHistory:  (name, limit = 20) => fetch(`/api/models/${encodeURIComponent(name)}/history?limit=${limit}`).then(r => r.json()),
+    modelContract: (name) => fetch(`/api/models/${encodeURIComponent(name)}/contract`).then(r => r.json()),
+    modelDocs:     (name) => fetch(`/api/models/${encodeURIComponent(name)}/docs`).then(r => r.json()),
+    portfolio:     () => fetch("/api/portfolio").then(r => r.json()),
+    reliability:   () => fetch("/api/reliability").then(r => r.json()),
     seeds:         () => fetch("/api/seeds").then(r => r.json()),
     runs:          (limit = 50) => fetch(`/api/runs?limit=${limit}`).then(r => r.json()),
     run:           (id) => fetch(`/api/runs/${encodeURIComponent(id)}`).then(r => r.json()),
@@ -40,6 +44,14 @@
       if (target === "seeds" && !seedsTabLoaded) {
         renderSeedsTab();
         seedsTabLoaded = true;
+      }
+      if (target === "portfolio" && !portfolioTabLoaded) {
+        renderPortfolioTab();
+        portfolioTabLoaded = true;
+      }
+      if (target === "reliability" && !reliabilityTabLoaded) {
+        renderReliabilityTab();
+        reliabilityTabLoaded = true;
       }
       // Cytoscape needs an explicit resize + layout kick after its container
       // goes from display:none back to visible, otherwise the canvas is blank.
@@ -61,6 +73,8 @@
   let cyInstance = null;       // cytoscape handle — kept so search can fade nodes
   let projectTabLoaded = false;
   let seedsTabLoaded = false;
+  let portfolioTabLoaded = false;
+  let reliabilityTabLoaded = false;
 
   // --- DAG render -----------------------------------------------------
   async function renderDag() {
@@ -74,8 +88,9 @@
       if (m.disabled) classes.push("status-disabled");
       else if (lastStatus) classes.push(`status-${lastStatus}`);
       else classes.push("status-never");
+      if (m.pii) classes.push("pii-inherit");
       elements.push({
-        data: { id: m.name, label: m.name, kind: m.kind, disabled: m.disabled },
+        data: { id: m.name, label: m.name, kind: m.kind, disabled: m.disabled, pii: !!m.pii },
         classes: classes.join(" ")
       });
     });
@@ -123,6 +138,14 @@
           "opacity": 0.5, "border-style": "dashed", "border-color": "#9aa0a6",
         }},
         { selector: "node:selected", style: { "border-width": 5 } },
+        { selector: ".pii-inherit", style: {
+          // PII overlay: pink outer ring + slightly pink background so the
+          // inherited-PII propagation is visible without overpowering kind/status.
+          "underlay-color": "#c026d3",
+          "underlay-padding": 4,
+          "underlay-opacity": 0.35,
+          "underlay-shape": "round-rectangle",
+        }},
         { selector: ".faded", style: { "opacity": 0.2 } },
         { selector: "edge", style: {
           "width": 1.2, "line-color": "#c6c8cd", "target-arrow-color": "#c6c8cd",
@@ -241,9 +264,24 @@
       : "<em>none</em>";
     const tags = m.tags && m.tags.length
       ? m.tags.map(t => `<code>${escape(t)}</code>`).join(" ") : null;
-    // Fire-and-forget history fetch; the DOM container fills in when the
-    // promise resolves so the main metadata block is not blocked on it.
+    // Fire-and-forget history + docs fetches; their DOM containers fill in
+    // when the promises resolve so the main metadata block renders instantly.
     loadReliability(m.name);
+    loadDocs(m.name);
+    const g = m.governance || {};
+    const hasGov = g.owner || g.team || g.criticality || g.sla_freshness_hours || (g.consumers || []).length;
+    const consumers = (g.consumers || []).map(c => {
+      if (c.url) return `<a href="${escape(c.url)}" target="_blank" rel="noopener">${escape(c.name)}</a>`;
+      return escape(c.name);
+    }).join(" &middot; ");
+    const govBlock = hasGov ? `
+      <dt>Owner / team</dt><dd>${escape(g.owner || "—")}${g.team ? ` &middot; <code>${escape(g.team)}</code>` : ""}</dd>
+      ${g.business_unit ? `<dt>Business unit</dt><dd>${escape(g.business_unit)}</dd>` : ""}
+      ${g.criticality ? `<dt>Criticality</dt><dd><span class="status-pill ${g.criticality === "tier-1" ? "failed" : "partial"}">${escape(g.criticality)}</span></dd>` : ""}
+      ${g.sla_freshness_hours != null ? `<dt>SLA freshness</dt><dd>${g.sla_freshness_hours}h</dd>` : ""}
+      ${g.sla_success_rate_target != null ? `<dt>SLA success target</dt><dd>${(g.sla_success_rate_target * 100).toFixed(0)}%</dd>` : ""}
+      ${consumers ? `<dt>Consumers</dt><dd>${consumers}</dd>` : ""}
+    ` : "";
     return `
       <div class="detail-block">
         <dl>
@@ -257,10 +295,29 @@
           <dt>Depends on</dt><dd>${deps}</dd>
           ${m.schedule_cron ? `<dt>Schedule</dt><dd><code>${escape(m.schedule_cron)}</code></dd>` : ""}
           ${tags ? `<dt>Tags</dt><dd>${tags}</dd>` : ""}
+          ${govBlock}
           <dt>Reliability</dt>
           <dd id="reliability-block"><em>loading&hellip;</em></dd>
+          <dt>Long-form docs</dt>
+          <dd id="docs-block"><em>loading&hellip;</em></dd>
         </dl>
       </div>`;
+  }
+
+  async function loadDocs(name) {
+    let d;
+    try { d = await api.modelDocs(name); } catch (_) { return; }
+    const block = document.getElementById("docs-block");
+    if (!block) return;
+    if (!d.markdown) {
+      block.innerHTML = "<em>No long-form docs (set <code>docs:</code> in schema.yml or add a sibling .md).</em>";
+      return;
+    }
+    const html = window.markdownit
+      ? window.markdownit({ html: false, linkify: true }).render(d.markdown)
+      : `<pre>${escape(d.markdown)}</pre>`;
+    block.innerHTML = `<div class="proj-readme">${html}</div>
+      <div style="font-size:10.5px;color:var(--text-dim);margin-top:4px;">Source: <code>${escape(d.source)}</code></div>`;
   }
 
   async function loadReliability(name) {
@@ -701,6 +758,102 @@
       `<span class="spark-bar" style="background:${statusColor[r.status] || "#c6c8cd"};" title="${escape(r.started_at)} — ${escape(r.status)}"></span>`
     ).join("");
     return `<div class="spark-row">${bars}</div>`;
+  }
+
+  // --- Portfolio tab --------------------------------------------------
+  async function renderPortfolioTab() {
+    const pane = document.getElementById("portfolio-pane");
+    pane.innerHTML = '<div class="detail-empty">Loading portfolio&hellip;</div>';
+    try {
+      const { models } = await api.portfolio();
+      const rows = models.map(m => {
+        const g = m.governance || {};
+        const srPct = m.success_rate_30d != null ? `${(m.success_rate_30d * 100).toFixed(0)}%` : "&mdash;";
+        const breachPill = (label, cond) => cond ? `<span class="status-pill failed">${escape(label)}</span>` : "";
+        const lastAge = m.last_success_age_hours != null ? `${m.last_success_age_hours.toFixed(1)}h ago` : "&mdash;";
+        return `
+          <tr>
+            <td><strong>${escape(m.name)}</strong></td>
+            <td><code>${escape(g.criticality || "—")}</code></td>
+            <td>${escape(g.owner || "—")}</td>
+            <td>${escape(g.team || "—")}</td>
+            <td>${escape(g.business_unit || "—")}</td>
+            <td>${g.sla_freshness_hours != null ? `${g.sla_freshness_hours}h` : "—"}</td>
+            <td>${lastAge}</td>
+            <td>${srPct} <span style="color:var(--text-dim); font-size: 10.5px;">(${m.sample_30d})</span></td>
+            <td>${breachPill("SLA freshness", m.freshness_breach)} ${breachPill("SLA success", m.success_breach)}</td>
+          </tr>`;
+      }).join("");
+      pane.innerHTML = `
+        <h2>Portfolio (${models.length} models)</h2>
+        <div class="proj-card" style="padding:0;">
+          <table class="portfolio-table">
+            <thead><tr>
+              <th>Model</th><th>Tier</th><th>Owner</th><th>Team</th><th>BU</th>
+              <th>SLA freshness</th><th>Last success</th>
+              <th>30-day success</th><th>Breaches</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    } catch (e) {
+      pane.innerHTML = `<div class="detail-empty">Load failed: ${escape(e.message)}</div>`;
+    }
+  }
+
+  // --- Reliability dashboard tab --------------------------------------
+  async function renderReliabilityTab() {
+    const pane = document.getElementById("reliability-pane");
+    pane.innerHTML = '<div class="detail-empty">Loading reliability&hellip;</div>';
+    try {
+      const r = await api.reliability();
+      const tierBlock = window => `
+        <div class="proj-card">
+          <h2 style="margin-top:0;">${escape(window)} attainment by tier</h2>
+          <table class="schema-table">
+            <thead><tr><th>Tier</th><th>Attainment</th><th>Sample</th></tr></thead>
+            <tbody>
+              ${Object.entries(r.tiers[window] || {}).map(([tier, data]) => `
+                <tr>
+                  <td><code>${escape(tier)}</code></td>
+                  <td>${data.attainment != null ? `${(data.attainment * 100).toFixed(0)}%` : "—"}</td>
+                  <td>${data.sample}</td>
+                </tr>`).join("") || '<tr><td colspan="3"><em>No runs in window.</em></td></tr>'}
+            </tbody>
+          </table>
+        </div>`;
+      const slowBlock = `
+        <div class="proj-card">
+          <h2 style="margin-top:0;">Slowest 10 by p95 elapsed</h2>
+          <table class="schema-table">
+            <thead><tr><th>Model</th><th>Tier</th><th>p95 elapsed</th></tr></thead>
+            <tbody>
+              ${r.slowest.length ? r.slowest.map(s => `
+                <tr>
+                  <td><code>${escape(s.name)}</code></td>
+                  <td><code>${escape(s.tier)}</code></td>
+                  <td>${s.p95_elapsed_seconds != null ? `${s.p95_elapsed_seconds.toFixed(2)}s` : "—"}</td>
+                </tr>`).join("") : '<tr><td colspan="3"><em>Not enough data.</em></td></tr>'}
+            </tbody>
+          </table>
+        </div>`;
+      const bucketBlock = `
+        <div class="proj-card">
+          <h2 style="margin-top:0;">Top failure buckets (last 30 runs)</h2>
+          ${Object.keys(r.failure_buckets).length ? `
+            <div class="diag-buckets">
+              ${Object.entries(r.failure_buckets).map(([b, n]) => `
+                <button class="diag-bucket" disabled><span class="b-name">${escape(b)}</span> <span class="b-count">${n}</span></button>`).join("")}
+            </div>` : '<em>No classified statement errors in the recent history.</em>'}
+        </div>`;
+      pane.innerHTML = `
+        ${tierBlock("7d")}
+        ${tierBlock("30d")}
+        ${slowBlock}
+        ${bucketBlock}`;
+    } catch (e) {
+      pane.innerHTML = `<div class="detail-empty">Load failed: ${escape(e.message)}</div>`;
+    }
   }
 
   // --- Project tab ----------------------------------------------------
