@@ -165,13 +165,12 @@ markdown-it. Tabs:
 Track it in [`docs/ROADMAP.md`](docs/ROADMAP.md); weekly snapshot in
 [`docs/STATUS.md`](docs/STATUS.md) (Czech).
 
-## Where we're going next (the v2.0 plan)
+## Development plan (v0.40.0)
 
-The plan past Phase 2 adapters. None of these is shipping today;
-they're the direction of travel. Rationale in
-[`docs/VISION.md`](docs/VISION.md), sequencing in
+Rationale in [`docs/VISION.md`](docs/VISION.md), sequencing in
 [`docs/STRATEGY.md`](docs/STRATEGY.md#phase-4--v20-differentiators),
-task list in [`docs/ROADMAP.md`](docs/ROADMAP.md#phase-4--v20-differentiators).
+task list in
+[`docs/ROADMAP.md`](docs/ROADMAP.md#phase-4--v20-differentiators).
 
 - **Backend arbitrage via dialect translation.** The same project
   runs on DuckDB locally and on Snowflake / BigQuery / JDBC in
@@ -200,9 +199,9 @@ task list in [`docs/ROADMAP.md`](docs/ROADMAP.md#phase-4--v20-differentiators).
   the MCP server (Phase 3). Goal: a working pipeline from a
   sentence, without opening a Jinja macro.
 
-Phase 4's done-done (per [`docs/STRATEGY.md`](docs/STRATEGY.md)) is
-two of these five shipped and demoed on a real customer pipeline —
-not all of them.
+v0.40.0 ships when two of the five are demoed on a real customer
+pipeline (see [`docs/STRATEGY.md`](docs/STRATEGY.md) Phase 4
+done-done criterion).
 
 ## Example minimal Python model
 
