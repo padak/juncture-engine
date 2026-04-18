@@ -190,9 +190,13 @@ adapter work — neither blocks the other.
       (static RunEvent shape per model). Vendored markdown-it for
       README rendering. DAG search fades non-matches by name / tag /
       description; Esc clears.
-- [ ] **M3 — P1 diagnostics + seeds + reliability**: diagnostics
+- [x] **M3 — P1 diagnostics + seeds + reliability**: diagnostics
       bucket panel, seeds tab with sentinels, per-model
-      last-20-runs sparkline. (~1–2 engineer-days.)
+      last-20-runs sparkline. Adds `/api/seeds`, `/api/runs/<id>/diagnostics`,
+      `/api/models/<name>/history`, and a bonus `/api/llm-knowledge`
+      endpoint that bundles manifest + source + seeds + latest run
+      into a single LLM-ingestible JSON (exposed via new "LLM kb"
+      button in the DAG toolbar).
 - [ ] **M4 — P2 governance**: `schema.yml` gains `owner` / `team` /
       `criticality` / `sla` / `docs`; Portfolio tab, data contracts
       view, PII / retention badges, reliability dashboard.

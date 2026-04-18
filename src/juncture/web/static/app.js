@@ -12,15 +12,19 @@
 
   // --- API ------------------------------------------------------------
   const api = {
-    project:      () => fetch("/api/project").then(r => r.json()),
-    projectCfg:   () => fetch("/api/project/config").then(r => r.json()),
-    projectReadme:() => fetch("/api/project/readme").then(r => r.json()),
-    projectGit:   () => fetch("/api/project/git").then(r => r.json()),
-    manifest:     () => fetch("/api/manifest").then(r => r.json()),
-    manifestOL:   () => fetch("/api/manifest/openlineage").then(r => r.json()),
-    model:        (name) => fetch(`/api/models/${encodeURIComponent(name)}`).then(r => r.json()),
-    runs:         (limit = 50) => fetch(`/api/runs?limit=${limit}`).then(r => r.json()),
-    run:          (id) => fetch(`/api/runs/${encodeURIComponent(id)}`).then(r => r.json()),
+    project:       () => fetch("/api/project").then(r => r.json()),
+    projectCfg:    () => fetch("/api/project/config").then(r => r.json()),
+    projectReadme: () => fetch("/api/project/readme").then(r => r.json()),
+    projectGit:    () => fetch("/api/project/git").then(r => r.json()),
+    manifest:      () => fetch("/api/manifest").then(r => r.json()),
+    manifestOL:    () => fetch("/api/manifest/openlineage").then(r => r.json()),
+    llmKb:         () => fetch("/api/llm-knowledge").then(r => r.json()),
+    model:         (name) => fetch(`/api/models/${encodeURIComponent(name)}`).then(r => r.json()),
+    modelHistory:  (name, limit = 20) => fetch(`/api/models/${encodeURIComponent(name)}/history?limit=${limit}`).then(r => r.json()),
+    seeds:         () => fetch("/api/seeds").then(r => r.json()),
+    runs:          (limit = 50) => fetch(`/api/runs?limit=${limit}`).then(r => r.json()),
+    run:           (id) => fetch(`/api/runs/${encodeURIComponent(id)}`).then(r => r.json()),
+    runDiag:       (id) => fetch(`/api/runs/${encodeURIComponent(id)}/diagnostics`).then(r => r.json()),
   };
 
   // --- Tab switching (top bar) ----------------------------------------
@@ -32,6 +36,10 @@
       if (target === "project" && !projectTabLoaded) {
         renderProjectTab();
         projectTabLoaded = true;
+      }
+      if (target === "seeds" && !seedsTabLoaded) {
+        renderSeedsTab();
+        seedsTabLoaded = true;
       }
       // Cytoscape needs an explicit resize + layout kick after its container
       // goes from display:none back to visible, otherwise the canvas is blank.
@@ -52,6 +60,7 @@
   let sourceView = "rendered";  // "rendered" | "raw"
   let cyInstance = null;       // cytoscape handle — kept so search can fade nodes
   let projectTabLoaded = false;
+  let seedsTabLoaded = false;
 
   // --- DAG render -----------------------------------------------------
   async function renderDag() {
@@ -175,11 +184,21 @@
   }
   const dlManifest = document.getElementById("dl-manifest");
   const dlOpenLineage = document.getElementById("dl-openlineage");
+  const dlLlmKb = document.getElementById("dl-llm-kb");
   if (dlManifest) dlManifest.addEventListener("click", async () => {
     downloadJson("manifest.json", await api.manifest());
   });
   if (dlOpenLineage) dlOpenLineage.addEventListener("click", async () => {
     downloadJson("manifest.openlineage.json", await api.manifestOL());
+  });
+  if (dlLlmKb) dlLlmKb.addEventListener("click", async () => {
+    dlLlmKb.disabled = true; dlLlmKb.textContent = "…";
+    try {
+      const kb = await api.llmKb();
+      downloadJson("llm-knowledge.json", kb);
+    } finally {
+      dlLlmKb.disabled = false; dlLlmKb.textContent = "LLM kb";
+    }
   });
 
   // --- Model detail (four-tab sidebar) ---------------------------------
@@ -222,6 +241,9 @@
       : "<em>none</em>";
     const tags = m.tags && m.tags.length
       ? m.tags.map(t => `<code>${escape(t)}</code>`).join(" ") : null;
+    // Fire-and-forget history fetch; the DOM container fills in when the
+    // promise resolves so the main metadata block is not blocked on it.
+    loadReliability(m.name);
     return `
       <div class="detail-block">
         <dl>
@@ -235,7 +257,24 @@
           <dt>Depends on</dt><dd>${deps}</dd>
           ${m.schedule_cron ? `<dt>Schedule</dt><dd><code>${escape(m.schedule_cron)}</code></dd>` : ""}
           ${tags ? `<dt>Tags</dt><dd>${tags}</dd>` : ""}
+          <dt>Reliability</dt>
+          <dd id="reliability-block"><em>loading&hellip;</em></dd>
         </dl>
+      </div>`;
+  }
+
+  async function loadReliability(name) {
+    let h;
+    try { h = await api.modelHistory(name, 20); } catch (_) { return; }
+    const block = document.getElementById("reliability-block");
+    if (!block) return;
+    const p50 = h.p50_elapsed_seconds != null ? `${h.p50_elapsed_seconds.toFixed(2)}s` : "—";
+    const p95 = h.p95_elapsed_seconds != null ? `${h.p95_elapsed_seconds.toFixed(2)}s` : "—";
+    const sr = h.success_rate_30d != null ? `${(h.success_rate_30d * 100).toFixed(0)}% (${h.sample_size_30d})` : "—";
+    block.innerHTML = `
+      ${renderSparkline(h.runs)}
+      <div style="margin-top:6px; font-size:11.5px; color: var(--text-dim);">
+        p50 ${p50} &middot; p95 ${p95} &middot; 30-day success ${sr}
       </div>`;
   }
 
@@ -390,7 +429,7 @@
 
   async function selectRun(runId) {
     document.querySelectorAll("#runs-body tr").forEach(tr => tr.classList.toggle("selected", tr.dataset.runId === runId));
-    const detail = await api.run(runId);
+    const [detail, diag] = await Promise.all([api.run(runId), api.runDiag(runId).catch(() => null)]);
 
     const panel = $("#run-detail");
     panel.classList.remove("detail-empty");
@@ -398,6 +437,19 @@
       (acc[t.model] = acc[t.model] || []).push(t);
       return acc;
     }, {});
+
+    // Diagnostics bucket summary (only when the run has statement_errors).
+    const bucketEntries = diag ? Object.entries(diag.buckets || {}) : [];
+    const diagBlock = bucketEntries.length ? `
+      <div class="diag-panel">
+        <h3>Diagnostics</h3>
+        <div class="diag-buckets">
+          ${bucketEntries.map(([b, n]) =>
+            `<button class="diag-bucket" data-bucket="${escape(b)}"><span class="b-name">${escape(b)}</span> <span class="b-count">${n}</span></button>`
+          ).join("")}
+          <button class="diag-bucket active" data-bucket="__all__"><span class="b-name">all</span></button>
+        </div>
+      </div>` : "";
 
     // Per-model clickable rows; each has a hidden twin drawer row below.
     const rows = detail.models.map((m, idx) => {
@@ -440,11 +492,32 @@
         ${escape(formatTime(detail.started_at))} &middot; ${detail.elapsed_seconds.toFixed(2)}s &middot;
         ${detail.ok ? '<span class="ok-yes">ok</span>' : '<span class="ok-no">failed</span>'}
       </div>
+      ${diagBlock}
       <table>
         <thead><tr><th>Model</th><th>Status</th><th>Elapsed</th><th>Rows</th><th>Error (summary)</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       ${runTestsBlock}`;
+
+    // Bucket filter: clicking a bucket chip shows only the model rows
+    // whose per_model classification touches that bucket. Clicking "all"
+    // resets.
+    if (diag) {
+      panel.querySelectorAll(".diag-bucket").forEach(btn => {
+        btn.addEventListener("click", () => {
+          panel.querySelectorAll(".diag-bucket").forEach(b => b.classList.toggle("active", b === btn));
+          const bucket = btn.dataset.bucket;
+          detail.models.forEach((m, idx) => {
+            const entries = diag.per_model[m.name] || [];
+            const show = bucket === "__all__" || entries.some(e => e.bucket === bucket);
+            const row = panel.querySelector(`tr.model-row[data-row-idx="${idx}"]`);
+            const drawer = panel.querySelector(`tr.model-drawer[data-drawer-idx="${idx}"]`);
+            if (row) row.style.display = show ? "" : "none";
+            if (drawer && !show) drawer.style.display = "none";
+          });
+        });
+      });
+    }
 
     // Click → expand drawer with every statement error and per-model tests.
     panel.querySelectorAll("tr.model-row").forEach(row => {
@@ -516,6 +589,118 @@
     if (window.Prism) {
       container.querySelectorAll("pre code").forEach(c => Prism.highlightElement(c));
     }
+  }
+
+  // --- Seeds tab ------------------------------------------------------
+  async function renderSeedsTab() {
+    const pane = document.getElementById("seeds-pane");
+    pane.innerHTML = '<div class="detail-empty">Loading seeds&hellip;</div>';
+    try {
+      const { seeds } = await api.seeds();
+      if (!seeds.length) {
+        pane.innerHTML = '<div class="detail-empty">No seeds declared in this project.</div>';
+        return;
+      }
+      const filterBox = `<div class="seeds-filter">
+        <input id="seeds-search" type="search" placeholder="Filter seeds (Esc clears)" autocomplete="off">
+        <label><input type="checkbox" id="seeds-only-sentinels"> only with sentinels</label>
+      </div>`;
+      const rows = seeds.map((s, idx) => {
+        const colsCount = Object.keys(s.inferred_types || {}).length;
+        const sentinelCols = Object.keys(s.sentinels || {}).length;
+        return `
+          <tr class="seed-row" data-idx="${idx}">
+            <td><span class="chev">&#9656;</span> <strong>${escape(s.name)}</strong></td>
+            <td><code>${escape(s.format)}</code></td>
+            <td>${sentinelCols ? `<span class="status-pill failed">${sentinelCols}</span>` : "&mdash;"}</td>
+            <td>${colsCount}</td>
+            <td>${s.row_count ?? "&mdash;"}</td>
+            <td>${s.format === "parquet" ? s.parquet_files : "&mdash;"}</td>
+            <td><code>${escape(s.path || "")}</code></td>
+          </tr>
+          <tr class="seed-drawer" data-drawer-idx="${idx}" style="display:none;">
+            <td colspan="7"><div class="drawer-inner" id="seed-drawer-${idx}"></div></td>
+          </tr>`;
+      }).join("");
+      pane.innerHTML = `
+        <h2>Seeds (${seeds.length})</h2>
+        ${filterBox}
+        <div class="proj-card" style="padding:0;">
+          <table class="seeds-table">
+            <thead><tr>
+              <th>Name</th><th>Format</th><th>Sentinels</th><th>Columns</th>
+              <th>Rows (last run)</th><th>Parquet files</th><th>Path</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+      // Row click expands drawer with column × inferred type + sentinel list.
+      pane.querySelectorAll("tr.seed-row").forEach(row => {
+        row.addEventListener("click", () => {
+          const idx = Number(row.dataset.idx);
+          const drawer = pane.querySelector(`tr.seed-drawer[data-drawer-idx="${idx}"]`);
+          const inner = document.getElementById(`seed-drawer-${idx}`);
+          const open = row.classList.toggle("expanded");
+          drawer.style.display = open ? "" : "none";
+          if (open && !drawer.dataset.loaded) {
+            renderSeedDrawer(inner, seeds[idx]);
+            drawer.dataset.loaded = "1";
+          }
+        });
+      });
+      // Client-side filtering.
+      const si = document.getElementById("seeds-search");
+      const chk = document.getElementById("seeds-only-sentinels");
+      const applyFilter = () => {
+        const q = (si.value || "").trim().toLowerCase();
+        const onlySent = chk.checked;
+        seeds.forEach((s, idx) => {
+          const show = (!q || s.name.toLowerCase().includes(q) || (s.path || "").toLowerCase().includes(q))
+            && (!onlySent || Object.keys(s.sentinels || {}).length > 0);
+          pane.querySelector(`tr.seed-row[data-idx="${idx}"]`).style.display = show ? "" : "none";
+          const drawer = pane.querySelector(`tr.seed-drawer[data-drawer-idx="${idx}"]`);
+          if (!show) drawer.style.display = "none";
+        });
+      };
+      si.addEventListener("input", applyFilter);
+      si.addEventListener("keydown", e => { if (e.key === "Escape") { si.value = ""; applyFilter(); } });
+      chk.addEventListener("change", applyFilter);
+    } catch (e) {
+      pane.innerHTML = `<div class="detail-empty">Load failed: ${escape(e.message)}</div>`;
+    }
+  }
+
+  function renderSeedDrawer(container, seed) {
+    const types = seed.inferred_types || {};
+    const sentinels = seed.sentinels || {};
+    if (!Object.keys(types).length) {
+      container.innerHTML = '<p style="color:var(--text-dim); font-style: italic;">No inferred types cached. Run <code>juncture run</code> to populate the seed schema cache.</p>';
+      return;
+    }
+    const rows = Object.entries(types).map(([col, t]) => {
+      const sp = sentinels[col];
+      const sentinelList = sp && sp.null_sentinels && sp.null_sentinels.length
+        ? sp.null_sentinels.map(v => `<code>${escape(v === "" ? "''" : v)}</code>`).join(" ")
+        : "&mdash;";
+      return `<tr><td><code>${escape(col)}</code></td><td><code>${escape(t)}</code></td><td>${sentinelList}</td></tr>`;
+    }).join("");
+    container.innerHTML = `
+      <h3>Columns &amp; inferred types</h3>
+      <table class="tests-table">
+        <thead><tr><th>Column</th><th>Type</th><th>Sentinels</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  // --- Reliability sparkline ------------------------------------------
+  function renderSparkline(runs) {
+    if (!runs.length) return "<em>No runs recorded.</em>";
+    const statusColor = { success: "#2ea043", failed: "#d1242f", partial: "#b08800", skipped: "#b08800", disabled: "#b3b5b9" };
+    // Right-to-left: the most recent run is on the right, same direction as the runs table.
+    const bars = runs.slice(0, 20).reverse().map(r =>
+      `<span class="spark-bar" style="background:${statusColor[r.status] || "#c6c8cd"};" title="${escape(r.started_at)} — ${escape(r.status)}"></span>`
+    ).join("");
+    return `<div class="spark-row">${bars}</div>`;
   }
 
   // --- Project tab ----------------------------------------------------

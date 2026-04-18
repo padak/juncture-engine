@@ -17,9 +17,10 @@ dist/
 htmlcov/
 *.egg
 
-# Junction artifacts
+# Juncture artifacts
 target/
 .junction/
+.juncture/
 *.duckdb
 *.duckdb.wal
 logs/
