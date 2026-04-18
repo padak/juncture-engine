@@ -32,6 +32,10 @@ credentials.json
 service-account.json
 !examples/**/.env.example
 
+# Generated example data (regenerate locally via scripts/generate_data.py)
+examples/eu_ecommerce/seeds/*.csv
+examples/eu_ecommerce/data/
+
 # Private Keboola internal docs (keep on disk, out of git)
 docs/priv/
 

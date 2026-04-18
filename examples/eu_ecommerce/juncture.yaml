@@ -1,0 +1,31 @@
+name: eu_ecommerce
+version: 0.1.0
+profile: local
+
+default_materialization: table
+default_schema: main
+
+# Jinja is enabled so SQL models can use {{ var('key') }} interpolation.
+# Without this flag, only ref() is rewritten and {{ var('...') }} tokens are
+# passed through verbatim (and would break parsing).
+jinja: true
+
+vars:
+  # Customers considered "active" if they ordered within this many days
+  # before reporting_end_date. Lowers the blast radius of refactors:
+  # every mart that asks "is this customer active?" inlines int_active_customer
+  # instead of re-encoding the same 90-day rule.
+  active_customer_days: 90
+  # VIP segment thresholds (aggregated over completed/refunded orders).
+  vip_threshold_orders: 10
+  vip_threshold_spend_eur: 500.0
+  # Anchor date for all recency computations. Fixed so the demo is
+  # deterministic even as real-world "today" moves forward.
+  reporting_end_date: "2026-01-01"
+
+connections:
+  local:
+    type: duckdb
+    path: data/eu_ecommerce.duckdb
+    threads: 4
+    memory_limit: 4GB
