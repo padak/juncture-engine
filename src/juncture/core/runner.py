@@ -66,6 +66,7 @@ class RunRequest:
     run_vars: dict[str, Any] = field(default_factory=dict)
     reuse_seeds: bool = False
     parallelism_override: int | None = None
+    continue_on_error: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -128,6 +129,7 @@ class Runner:
             dag = self._apply_selectors(dag, request.select, request.exclude)
 
         _apply_parallelism_override(project.models, request.parallelism_override)
+        _apply_continue_on_error(project.models, request.continue_on_error)
 
         schema = project.config.default_schema
         with adapter:
@@ -264,6 +266,22 @@ def _apply_parallelism_override(models: list[Model], override: int | None) -> No
     for model in models:
         if model.materialization is Materialization.EXECUTE:
             model.config["parallelism"] = override
+
+
+def _apply_continue_on_error(models: list[Model], enabled: bool) -> None:
+    """Toggle ``config.continue_on_error`` on every EXECUTE model in place.
+
+    Called from :meth:`Runner.run` when the CLI ``--continue-on-error`` flag
+    is set. Intentionally scoped to EXECUTE — the flag exists to turn a
+    multi-statement migration body from "fail fast" into "surface every
+    primary error in one pass". Non-EXECUTE models are single-statement
+    materializations; continue-on-error has no meaning there.
+    """
+    if not enabled:
+        return
+    for model in models:
+        if model.materialization is Materialization.EXECUTE:
+            model.config["continue_on_error"] = True
 
 
 def _intra_script_stats(model: Model) -> IntraScriptStats | None:

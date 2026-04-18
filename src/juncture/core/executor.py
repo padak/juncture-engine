@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 @dataclass(kw_only=True)
 class ModelRun:
     model: Model
-    status: str  # "success" | "failed" | "skipped"
+    status: str  # "success" | "failed" | "skipped" | "partial"
     result: MaterializationResult | None = None
     error: str | None = None
     elapsed_seconds: float = 0.0
@@ -54,7 +54,25 @@ class ExecutionResult:
         return sum(1 for r in self.runs if r.status == "skipped")
 
     @property
+    def partial(self) -> int:
+        """Number of EXECUTE models that finished with per-statement errors.
+
+        Only populated when a run used ``--continue-on-error`` and the
+        adapter collected ``StatementError`` records instead of aborting.
+        Counted separately from ``successes``: the model finished (downstream
+        can run) but some statements inside it failed — typically the
+        migration-triage signal.
+        """
+        return sum(1 for r in self.runs if r.status == "partial")
+
+    @property
     def ok(self) -> bool:
+        """True if no model failed outright.
+
+        ``partial`` runs are not failures: when the user asked for
+        continue-on-error they are volunteering to inspect the per-statement
+        error list, not to have the run marked failed.
+        """
         return self.failures == 0
 
 
@@ -153,10 +171,21 @@ class Executor:
                     run_vars=self.run_vars,
                 )
                 mat = self.adapter.materialize_python(model, ctx, schema=self.schema)
+            # EXECUTE materialization under --continue-on-error returns a
+            # result with non-empty statement_errors. Downgrade to "partial"
+            # so downstream (and the CLI exit code) can distinguish a clean
+            # run from one carrying triage output.
+            status = "partial" if mat.statement_errors else "success"
+            error = (
+                f"{len(mat.statement_errors)} statement(s) failed (continue-on-error mode)"
+                if mat.statement_errors
+                else None
+            )
             return ModelRun(
                 model=model,
-                status="success",
+                status=status,
                 result=mat,
+                error=error,
                 elapsed_seconds=time.perf_counter() - t0,
             )
         except Exception as exc:

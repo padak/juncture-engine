@@ -22,13 +22,22 @@ from typing import TYPE_CHECKING, Any
 import duckdb
 import networkx as nx
 
-from juncture.adapters.base import Adapter, AdapterError, MaterializationResult
+from juncture.adapters.base import (
+    Adapter,
+    AdapterError,
+    MaterializationResult,
+    StatementError,
+)
 from juncture.adapters.registry import register_adapter
 from juncture.core.model import Materialization
 from juncture.parsers.sqlglot_parser import (
     build_statement_dag,
     split_statements,
 )
+
+# How much of a failing statement we store in a StatementError; enough to
+# recognise but not so much that a 10k-line body balloons the run report.
+_STATEMENT_ERROR_SQL_LIMIT = 500
 
 log = logging.getLogger(__name__)
 
@@ -151,12 +160,26 @@ class DuckDBAdapter(Adapter):
         dependency DAG (see :func:`build_statement_dag`) and each topological
         layer is fanned out over a :class:`ThreadPoolExecutor` of that width.
 
+        When ``model.config["continue_on_error"]`` is truthy the adapter keeps
+        going past a failing statement, collecting each failure into
+        ``MaterializationResult.statement_errors`` instead of re-raising. This
+        is the migration-triage mode: a 400-statement body reveals every
+        primary error in one pass rather than the serial "fix one, run again,
+        fix next" loop.
+
         Row counts would require inspecting each DDL/DML statement; instead
         the adapter reports the number of statements executed as ``row_count``.
         """
         parallelism = _coerce_parallelism(model.config.get("parallelism"))
+        continue_on_error = bool(model.config.get("continue_on_error", False))
         if parallelism > 1:
-            return self._execute_raw_parallel(model, rendered_sql, schema=schema, parallelism=parallelism)
+            return self._execute_raw_parallel(
+                model,
+                rendered_sql,
+                schema=schema,
+                parallelism=parallelism,
+                continue_on_error=continue_on_error,
+            )
 
         cursor = self._thread_cursor()
         # DuckDB allows `USE schema;` to set the default search path; with
@@ -165,11 +188,29 @@ class DuckDBAdapter(Adapter):
         cursor.execute(f'USE "{schema}"')
 
         statements = split_statements(rendered_sql)
+        errors: list[StatementError] = []
         t0 = time.perf_counter()
-        for stmt in statements:
+        for idx, stmt in enumerate(statements):
             if not stmt.strip():
                 continue
-            cursor.execute(stmt)
+            try:
+                cursor.execute(stmt)
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                errors.append(
+                    StatementError(
+                        index=idx,
+                        sql=stmt[:_STATEMENT_ERROR_SQL_LIMIT],
+                        error=str(exc),
+                    )
+                )
+                log.warning(
+                    "EXECUTE continue-on-error: %s statement %d failed: %s",
+                    model.name,
+                    idx,
+                    exc,
+                )
         elapsed = time.perf_counter() - t0
 
         fqn = self.resolve(model.name, schema=schema)
@@ -180,6 +221,7 @@ class DuckDBAdapter(Adapter):
             row_count=len(statements),
             elapsed_seconds=elapsed,
             warnings=[],
+            statement_errors=errors,
         )
 
     def _execute_raw_parallel(
@@ -189,6 +231,7 @@ class DuckDBAdapter(Adapter):
         *,
         schema: str,
         parallelism: int,
+        continue_on_error: bool = False,
     ) -> MaterializationResult:
         """Parallel variant of :meth:`_execute_raw`.
 
@@ -197,6 +240,15 @@ class DuckDBAdapter(Adapter):
         statements are submitted to a shared ``ThreadPoolExecutor``; the layer
         completes only when every statement in it has finished (or one fails,
         in which case the error is re-raised with layer + statement context).
+
+        When ``continue_on_error`` is true the layer still completes in full
+        (we wait for every in-flight future), but errors are collected into
+        ``StatementError`` records instead of aborting. Subsequent layers
+        continue — even though downstream statements may now fail on
+        missing-table errors — because the whole point of the mode is to
+        surface every primary error in one pass; the cascade signal is what
+        :mod:`juncture.diagnostics` later uses to classify primary vs.
+        cascade errors.
 
         Per-layer elapsed time is logged at INFO so users can see where
         parallelism pays off vs. where DuckDB's catalog lock / intra-query
@@ -213,11 +265,12 @@ class DuckDBAdapter(Adapter):
 
         layers = list(nx.topological_generations(graph))
         log.info(
-            "EXECUTE parallel: %s — %d statements, %d layers, parallelism=%d",
+            "EXECUTE parallel: %s — %d statements, %d layers, parallelism=%d, continue_on_error=%s",
             model.name,
             total,
             len(layers),
             parallelism,
+            continue_on_error,
         )
 
         def _run_one(idx: int) -> None:
@@ -226,25 +279,54 @@ class DuckDBAdapter(Adapter):
             cursor.execute(f'USE "{schema}"')
             cursor.execute(node.sql)
 
+        errors: list[StatementError] = []
         t0 = time.perf_counter()
         with ThreadPoolExecutor(max_workers=parallelism) as pool:
             for layer_i, layer in enumerate(layers):
                 t_layer = time.perf_counter()
                 future_to_idx = {pool.submit(_run_one, idx): idx for idx in layer}
-                try:
+                if continue_on_error:
                     for fut in as_completed(future_to_idx):
-                        fut.result()
-                except Exception as exc:
-                    # Cancel any still-queued futures so we don't keep pushing
-                    # statements against a database that already errored.
-                    for pending in future_to_idx:
-                        pending.cancel()
-                    failed_idx = future_to_idx[fut]
-                    failed_node = graph.nodes[failed_idx]["node"]
-                    raise AdapterError(
-                        f"EXECUTE parallel failed in layer {layer_i} "
-                        f"(statement #{failed_idx}, output={failed_node.output!r}): {exc}"
-                    ) from exc
+                        idx = future_to_idx[fut]
+                        try:
+                            fut.result()
+                        except Exception as exc:
+                            node = graph.nodes[idx]["node"]
+                            errors.append(
+                                StatementError(
+                                    index=idx,
+                                    sql=node.sql[:_STATEMENT_ERROR_SQL_LIMIT],
+                                    error=str(exc),
+                                    layer=layer_i,
+                                )
+                            )
+                            log.warning(
+                                "EXECUTE parallel continue-on-error: layer %d statement %d failed: %s",
+                                layer_i,
+                                idx,
+                                exc,
+                            )
+                else:
+                    failed_idx: int | None = None
+                    failed_exc: BaseException | None = None
+                    for fut in as_completed(future_to_idx):
+                        idx = future_to_idx[fut]
+                        try:
+                            fut.result()
+                        except Exception as exc:
+                            failed_idx = idx
+                            failed_exc = exc
+                            break
+                    if failed_exc is not None:
+                        for pending in future_to_idx:
+                            pending.cancel()
+                        assert failed_idx is not None
+                        failed_node = graph.nodes[failed_idx]["node"]
+                        raise AdapterError(
+                            f"EXECUTE parallel failed in layer {layer_i} "
+                            f"(statement #{failed_idx}, output={failed_node.output!r}): "
+                            f"{failed_exc}"
+                        ) from failed_exc
                 log.info(
                     "  layer %d/%d: %d statements, %.2fs",
                     layer_i + 1,
@@ -262,6 +344,7 @@ class DuckDBAdapter(Adapter):
             row_count=total,
             elapsed_seconds=elapsed,
             warnings=[],
+            statement_errors=errors,
         )
 
     def _empty_execute_result(self, model: Model, *, schema: str) -> MaterializationResult:

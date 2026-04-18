@@ -227,6 +227,13 @@ def run(
         help="Override config.parallelism on every EXECUTE model (for benchmarking "
         "without editing schema.yml). Default: respect per-model config.",
     ),
+    continue_on_error: bool = typer.Option(
+        False,
+        "--continue-on-error",
+        help="For EXECUTE materializations: keep running after a failing statement "
+        "and collect every primary error into the run report. Intended for migration "
+        "triage — pair with `juncture diagnostics` to classify the errors.",
+    ),
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
@@ -241,6 +248,7 @@ def run(
         run_vars=run_vars,
         reuse_seeds=reuse_seeds,
         parallelism_override=parallelism,
+        continue_on_error=continue_on_error,
     )
     if dry_run:
         plan = Runner().plan(request)
@@ -255,8 +263,14 @@ def run(
     table.add_column("Time (s)", justify="right")
     table.add_column("Error", overflow="fold")
 
+    status_colors = {
+        "success": "green",
+        "failed": "red",
+        "skipped": "yellow",
+        "partial": "yellow",
+    }
     for r in report.models.runs:
-        status_style = {"success": "green", "failed": "red", "skipped": "yellow"}[r.status]
+        status_style = status_colors.get(r.status, "white")
         rows = str(r.result.row_count) if r.result and r.result.row_count is not None else "—"
         error = r.error or ""
         table.add_row(
@@ -267,6 +281,23 @@ def run(
             error,
         )
     console.print(table)
+
+    # Per-statement errors from continue-on-error runs. Printed after the
+    # main results table so they don't crowd the overview. First three
+    # errors verbatim, plus a count of the rest — migration triage uses
+    # `juncture diagnostics` on the full list anyway.
+    for r in report.models.runs:
+        if not (r.result and r.result.statement_errors):
+            continue
+        errors = r.result.statement_errors
+        console.print(
+            f"\n[bold yellow]{r.model.name}[/] — {len(errors)} statement(s) failed (continue-on-error):"
+        )
+        for err in errors[:3]:
+            layer_tag = f" layer={err.layer}" if err.layer is not None else ""
+            console.print(f"  [dim]#{err.index}{layer_tag}[/] {err.error}")
+        if len(errors) > 3:
+            console.print(f"  [dim]... +{len(errors) - 3} more[/]")
 
     if report.tests:
         tt = Table(title="Data tests")
