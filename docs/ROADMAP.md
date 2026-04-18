@@ -41,6 +41,14 @@ Target: Juncture is safe to use on a real laptop pipeline of 20-50 models.
 - [x] **Parallel EXECUTE**: intra-script DAG + `ThreadPoolExecutor` per
       topological layer, opt-in via `config.parallelism: N`. Default 1
       = sequential (back-compat).
+- [x] **`juncture run --dry-run`**: plan-only mode — loads project,
+      computes layers, surfaces intra-EXECUTE stats, without opening the
+      adapter or loading seeds.
+- [x] **`juncture split-execute`**: rewrites a multi-statement EXECUTE
+      script into one `.sql` model per CTAS target with
+      `{{ ref(...) }}` inference; non-CTAS statements (INSERT/UPDATE/…)
+      collected into a residual EXECUTE model with auto-inferred
+      depends_on.
 - [x] **Hybrid type inference** for parquet seeds (full-scan < 1M rows,
       sample above).
 - [x] **Parallel seed loading** via `ThreadPoolExecutor`.

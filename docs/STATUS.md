@@ -37,7 +37,9 @@ helper). Pár položek z `ROADMAP.md` ještě čeká — viz sekce v0.2 tam.
 | `0e76ff7` | paralelní seed loading přes `ThreadPoolExecutor` |
 | `4fc601d` | CASE type harmonization Snowflake→DuckDB + `juncture sanitize` CLI (řeší VARCHAR/INT blocker) |
 | `a300e37` | `StatementNode` + `build_statement_dag` — intra-script DAG API v parseru |
-| _HEAD_ | **Parallel EXECUTE** — `config.parallelism: N` iteruje vrstvy přes `ThreadPoolExecutor` |
+| `840fd1e` | **Parallel EXECUTE** — `config.parallelism: N` iteruje vrstvy přes `ThreadPoolExecutor` |
+| `8637137` | **Dry-run** — `juncture run --dry-run` ukáže plán (model layers + intra-EXECUTE vrstvy) bez otevření DB |
+| _HEAD_ | **split-execute** — `juncture split-execute` rozloží monolit na mini-modely s auto-inferovanými `ref()` |
 
 ### Infrastruktura
 

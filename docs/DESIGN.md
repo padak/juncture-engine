@@ -264,6 +264,13 @@ Conventions and gotchas:
 
 ### 3.11 Migration (`juncture.migration`)
 
+Three migration tools ship today:
+
+1. `juncture migrate-keboola` — raw Keboola configuration-API JSON.
+2. `juncture migrate-sync-pull` — kbagent sync-pull filesystem layout.
+3. `juncture split-execute` — refactor an existing EXECUTE monolith
+   into per-table models (see 3.11.1 below).
+
 Two migrators share the `juncture migrate-keboola*` CLI family:
 
 - `keboola_sql` — input is a raw Keboola configuration-API JSON payload.
@@ -292,6 +299,37 @@ Two migrators share the `juncture migrate-keboola*` CLI family:
   The SQL is migrated **as-is** using the `execute` materialization
   (3.5). Snowflake constructs DuckDB rejects surface as real parse errors
   the user can fix iteratively, rather than being silently rewritten.
+
+#### 3.11.1 split-execute (`juncture.migration.split_execute`)
+
+Turns a single EXECUTE model into N Juncture-native `.sql` models
+(+ optional residual EXECUTE block). Flow:
+
+1. Split the script via `split_statements`.
+2. Phase 1 — discover all tables produced by CTAS (`CREATE [OR REPLACE]
+   TABLE|VIEW X AS SELECT ...`). These become ref() targets.
+3. Phase 2 — for each statement:
+   - CTAS → extract its inner `SELECT` (`_ctas_body`), rewrite every
+     intra-script table reference to a sentinel identifier, render via
+     SQLGlot, then string-substitute the sentinel for
+     `{{ ref('name') }}`. External tables (seeds, source data) stay
+     raw.
+   - Anything else (INSERT / UPDATE / DELETE / DDL / SET / USE / parse
+     errors) → residual, with its produced-in-script references
+     accumulated as the residual's `depends_on`.
+4. Unique-name guard: if the same CTAS target appears more than once,
+   raise `SplitExecuteError`. Silent merging would change semantics
+   when readers between the two producers exist.
+5. Residual SQL is written with leading `SELECT 1 FROM {{ ref('X') }}
+   LIMIT 0` hints so Juncture's regular ref() extraction picks up the
+   DAG edges without a schema.yml `depends_on:` field (which today
+   doesn't exist).
+
+`juncture split-execute --dry-run` previews the plan without writing
+files. Typical post-split flow is `compile --json` → inspect new DAG
+→ `run`. Split projects get parallel-model execution from the standard
+Juncture executor "for free" and no longer need `config.parallelism`
+on the root monolith.
 
 ## 4. Configuration: `juncture.yaml`
 
