@@ -264,6 +264,82 @@ def test_api_unknown_run_id_returns_404(project_with_history: Path) -> None:
         server.server_close()
 
 
+def test_api_project_config_returns_raw_and_parsed(project_with_history: Path) -> None:
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/project/config")
+        assert status == 200
+        cfg = json.loads(body)
+        assert cfg["path"] == "juncture.yaml"
+        assert "name: webproj" in cfg["raw"]
+        assert cfg["parsed"]["name"] == "webproj"
+        assert cfg["parsed"]["profile"] == "local"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_project_readme_missing_returns_null(project_with_history: Path) -> None:
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/project/readme")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["markdown"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_project_readme_present_returns_markdown(project_with_history: Path) -> None:
+    (project_with_history / "README.md").write_text("# webproj\n\nToy test project.\n")
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/project/readme")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["filename"] == "README.md"
+        assert "# webproj" in payload["markdown"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_project_git_missing_returns_unavailable(project_with_history: Path) -> None:
+    # tmp_path is not a git checkout — endpoint must degrade gracefully.
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/project/git")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["available"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_manifest_openlineage_shape(project_with_history: Path) -> None:
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/manifest/openlineage")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["project"] == "webproj"
+        # One RunEvent per model.
+        names = {e["job"]["name"] for e in payload["events"]}
+        assert {"stg", "mart"} <= names
+        mart_event = next(e for e in payload["events"] if e["job"]["name"] == "mart")
+        # mart depends on stg → stg appears in inputs as a Dataset.
+        assert any(i["name"] == "stg" for i in mart_event["inputs"])
+        # Outputs carry the kind/materialization facet we emit.
+        facet = mart_event["outputs"][0]["facets"]["junctureModel"]
+        assert facet["kind"] == "sql"
+        assert facet["materialization"] == "table"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_static_directory_traversal_blocked(project_with_history: Path) -> None:
     server, host, port = _serve_in_thread(project_with_history)
     try:

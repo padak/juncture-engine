@@ -142,3 +142,74 @@ def _iso_now() -> str:
     from datetime import datetime
 
     return datetime.now(UTC).isoformat()
+
+
+# --- Static manifest → OpenLineage shape (used by the web export) -------
+# RFC 0001 §5.2 P1.5: the UI lets a user download manifest.openlineage.json
+# as a one-shot static export. This produces one RunEvent per model plus
+# the upstream Dataset references, so an OpenLineage-aware catalog can
+# bootstrap its Job + Dataset registry off a Juncture project without
+# running anything. The shape follows OpenLineage spec 1.0.5.
+
+_OPENLINEAGE_SCHEMA_URL = "https://openlineage.io/spec/1-0-5/OpenLineage.json"
+_OPENLINEAGE_PRODUCER = "https://github.com/padak/juncture-engine"
+
+
+def manifest_to_openlineage_events(
+    manifest: dict[str, Any],
+    *,
+    namespace: str | None = None,
+    event_time: str | None = None,
+) -> list[dict[str, Any]]:
+    """Convert a ``/api/manifest`` payload into OpenLineage RunEvent dicts.
+
+    One ``RunEvent`` (eventType=COMPLETE) is emitted per model. Inputs
+    list every declared dependency as a Dataset; outputs list the model
+    itself. Seeds appear both as independent events and as inputs for
+    downstream models.
+
+    The function returns plain ``dict`` objects (not the openlineage-python
+    SDK classes) so the endpoint works without the optional
+    ``openlineage-python`` install. ``namespace`` defaults to
+    ``juncture:<project>``. ``event_time`` is an ISO-8601 string; the
+    default is the current UTC clock, per RFC §12 question 4.
+    """
+    ns = namespace or f"juncture:{manifest.get('project', 'unknown')}"
+    ts = event_time or _iso_now()
+    events: list[dict[str, Any]] = []
+    for model in manifest.get("models", []):
+        inputs = [{"namespace": ns, "name": dep} for dep in model.get("depends_on", [])]
+        outputs = [
+            {
+                "namespace": ns,
+                "name": model["name"],
+                "facets": {
+                    "dataSource": {
+                        "_producer": _OPENLINEAGE_PRODUCER,
+                        "_schemaURL": f"{_OPENLINEAGE_SCHEMA_URL}#/$defs/DataSourceDatasetFacet",
+                        "name": ns,
+                    },
+                    "junctureModel": {
+                        "_producer": _OPENLINEAGE_PRODUCER,
+                        "_schemaURL": f"{_OPENLINEAGE_SCHEMA_URL}#/$defs/DatasetFacet",
+                        "kind": model.get("kind"),
+                        "materialization": model.get("materialization"),
+                        "disabled": bool(model.get("disabled", False)),
+                        "tags": list(model.get("tags") or []),
+                    },
+                },
+            }
+        ]
+        events.append(
+            {
+                "eventType": "COMPLETE",
+                "eventTime": ts,
+                "producer": _OPENLINEAGE_PRODUCER,
+                "schemaURL": f"{_OPENLINEAGE_SCHEMA_URL}#/$defs/RunEvent",
+                "run": {"runId": model["name"]},  # 1 synthetic run per model
+                "job": {"namespace": ns, "name": model["name"]},
+                "inputs": inputs,
+                "outputs": outputs,
+            }
+        )
+    return events
