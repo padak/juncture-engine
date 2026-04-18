@@ -3,7 +3,7 @@
 > Multi-backend SQL + Python transformation engine. Local-first,
 > DuckDB-native.
 
-**Status:** early alpha (`0.1.0a0` → `0.40.0`). Engine runs real
+**Status:** early beta. Engine runs real
 workloads on DuckDB end-to-end (pilot migration: 208 parquet seeds
 x 374 SQL statements). Snowflake / BigQuery / JDBC adapters are
 Phase 2 — stub only today.
@@ -169,7 +169,7 @@ Rationale in [`docs/VISION.md`](docs/VISION.md), sequencing in
   `juncture.observability.lineage`; static export via
   `/api/manifest/openlineage` already works.
 
-### Phase 4 — differentiators (tracking towards v0.40.0)
+### Phase 4 — differentiators
 
 - **Backend arbitrage via dialect translation.** The same project
   runs on DuckDB locally and on Snowflake / BigQuery / JDBC in
@@ -198,9 +198,9 @@ Rationale in [`docs/VISION.md`](docs/VISION.md), sequencing in
   the MCP server (Phase 3). Goal: a working pipeline from a
   sentence, without opening a Jinja macro.
 
-v0.40.0 ships when two of the five Phase 4 items are demoed on a
-real customer pipeline (see [`docs/STRATEGY.md`](docs/STRATEGY.md)
-Phase 4 done-done criterion).
+Each item ships after it's been tested on a real production workload
+(see [`docs/STRATEGY.md`](docs/STRATEGY.md) Phase 4 done-done
+criterion).
 
 ## Example minimal Python model
 
