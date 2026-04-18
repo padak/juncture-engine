@@ -179,6 +179,12 @@ class Project:
     seeds: list[SeedSpec] = field(default_factory=list)
     custom_tests: list[CustomTestSpec] = field(default_factory=list)
 
+    #: Cached dict of ``{macro_name: callable}`` loaded from ``macros/**/*.sql``
+    #: once per :meth:`Project.load`. Populated only when ``jinja: true`` —
+    #: macros without jinja mode would silently do nothing, so we don't load
+    #: them then. Consumed by :func:`_render_jinja` via the project context.
+    _jinja_macros: dict[str, Any] = field(default_factory=dict)
+
     @classmethod
     def load(cls, root: Path | str) -> Project:
         root = Path(root).resolve()
@@ -192,6 +198,11 @@ class Project:
         project._load_schemas()
         project.seeds = project._discover_seeds()
         project.custom_tests = project._discover_custom_tests()
+        if project.config.jinja:
+            project._jinja_macros = _load_jinja_macros(
+                project.root / project.config.macros_path,
+                project.config.vars,
+            )
         project.models = project._discover_models()
         return project
 
@@ -418,7 +429,7 @@ class Project:
     def _load_sql_model(self, path: Path, seed_names: set[str]) -> Model:
         sql = path.read_text()
         if self.config.jinja:
-            sql = _render_jinja(sql, self.config.vars)
+            sql = _render_jinja(sql, self.config.vars, macros=self._jinja_macros)
         name = path.stem
         refs = extract_refs(sql)
         # Seeds participate in the DAG -- if a model refs a seed via
@@ -587,12 +598,22 @@ def _load_dotenv_if_present(root: Path) -> None:
     load_dotenv(dotenv, override=False)
 
 
-def _render_jinja(sql: str, variables: dict[str, Any]) -> str:
+def _render_jinja(
+    sql: str,
+    variables: dict[str, Any],
+    *,
+    macros: dict[str, Any] | None = None,
+) -> str:
     """Render SQL through Jinja with ``ref()`` + ``var()`` helpers.
 
     ``ref('x')`` stays unchanged so our regex can pick it up downstream;
     this function exists so users can use other Jinja constructs (loops,
     conditionals, variable interpolation) for dbt compatibility.
+
+    ``macros`` are preloaded callables from ``macros/**/*.sql`` (see
+    :func:`_load_jinja_macros`); each becomes a globally available Jinja
+    function so an author can call ``{{ my_date(col) }}`` from any model
+    without an ``{% import %}`` line.
     """
     import jinja2
 
@@ -607,5 +628,51 @@ def _render_jinja(sql: str, variables: dict[str, Any]) -> str:
         autoescape=False,
         keep_trailing_newline=True,
     )
+    if macros:
+        env.globals.update(macros)
     template = env.from_string(sql)
     return template.render(ref=_ref, var=_var, **variables)
+
+
+def _load_jinja_macros(macros_root: Path, variables: dict[str, Any]) -> dict[str, Any]:
+    """Collect every ``{% macro %}`` defined under ``macros/**/*.sql``.
+
+    Files are concatenated and rendered once; Jinja turns exported macros
+    into callable attributes on the resulting module object, which we
+    copy into a plain dict so :func:`_render_jinja` can attach them to
+    every per-model Environment as globals.
+
+    Returns an empty dict if ``macros/`` does not exist or holds no
+    ``.sql`` files, so the caller doesn't need a second existence check.
+
+    Macros may themselves call ``ref()`` / ``var()``; stubs are injected
+    so the module compiles, mirroring the exact semantics used at model
+    render time (``ref()`` stays verbatim so the downstream regex picks
+    it up; ``var()`` reads from the project vars dict).
+    """
+    import jinja2
+
+    if not macros_root.exists():
+        return {}
+    files = sorted(macros_root.rglob("*.sql"))
+    if not files:
+        return {}
+
+    body = "\n\n".join(f.read_text() for f in files)
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined, autoescape=False)
+    env.globals["ref"] = lambda name: f"{{{{ ref('{name}') }}}}"
+    env.globals["var"] = lambda key, default=None: variables.get(key, default)
+    try:
+        template = env.from_string(body)
+        module = template.make_module({})
+    except jinja2.TemplateSyntaxError as exc:
+        raise ProjectError(f"Failed to parse macros under {macros_root}: {exc}") from exc
+
+    macros: dict[str, Any] = {}
+    for attr_name in dir(module):
+        if attr_name.startswith("_"):
+            continue
+        obj = getattr(module, attr_name)
+        if callable(obj):
+            macros[attr_name] = obj
+    return macros

@@ -210,6 +210,15 @@ See `docs/DESIGN.md`, `docs/CONFIGURATION.md`, `docs/ROADMAP.md`,
 `fix:`, `docs:`, `refactor:`, `test:`, `chore:`. No AI attribution
 footers.
 
+**MANDATORY pre-commit checklist — run every time before `git commit`:**
+
+```bash
+make fmt && make lint && make typecheck && make test
+```
+
+`make fmt` (ruff format) is separate from `make lint` (ruff check) — CI
+runs both and will fail if format is dirty. Never skip `make fmt`.
+
 ## Docs maintenance (IMPORTANT)
 
 The project uses a small, deliberate set of files under `docs/`. Keep

@@ -210,6 +210,45 @@ See also [`scripts/analyze_execute.py`](../scripts/analyze_execute.py)
 top-10 fan-out producers for a given EXECUTE script. Run it before
 tuning the ``parallelism`` value.
 
+## Jinja macros (`macros/`)
+
+When `jinja: true` is set in `juncture.yaml`, every `.sql` file under
+`macros/` is loaded once at project-load time. Every `{% macro %}`
+exported from those files becomes globally available to every model
+— no `{% import %}` needed, the UX matches dbt.
+
+```sql
+-- macros/dates.sql
+{% macro day(col) -%}
+  strftime({{ col }}, '%Y-%m-%d')
+{%- endmacro %}
+
+{% macro is_vip(col) -%}
+  ({{ col }} >= {{ var('vip_threshold', 500) }})
+{%- endmacro %}
+```
+
+```sql
+-- models/daily_flagged.sql
+SELECT
+  {{ day('order_ts') }} AS day,
+  customer_id,
+  amount,
+  {{ is_vip('amount') }} AS is_vip
+FROM {{ ref('orders') }}
+```
+
+- Macro files can be nested (`macros/dates/fmt.sql` works).
+- A macro body can call `ref('x')` — it passes through verbatim so the
+  downstream regex still picks the dependency up.
+- A macro body can call `var('key', default)` — it reads from the
+  project `vars:` block, so a single `vip_threshold` override in
+  `juncture.yaml` (or on the command line via `--var`) flows into every
+  macro call automatically.
+- Without `jinja: true` the loader is a no-op. A bare `.sql` file with a
+  `{% macro %}` definition in it would be a plain syntax error when
+  sent to the warehouse, so the two features are gated together.
+
 ## Seeds
 
 Seeds live under `seeds/` and are loaded once, in parallel, before the
