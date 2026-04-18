@@ -3,10 +3,10 @@
 > Multi-backend SQL + Python transformation engine. Local-first,
 > DuckDB-native.
 
-**Status:** early alpha (`0.1.0a0`). Engine runs real workloads on
-DuckDB end-to-end (pilot migration: 208 parquet seeds x 374 SQL
-statements). Snowflake / BigQuery / JDBC adapters are Phase 2 —
-stub only today.
+**Status:** early alpha (`0.1.0a0` → `0.40.0`). Engine runs real
+workloads on DuckDB end-to-end (pilot migration: 208 parquet seeds
+x 374 SQL statements). Snowflake / BigQuery / JDBC adapters are
+Phase 2 — stub only today.
 
 One engine that replaces Keboola's four legacy transformation
 components (`snowflake-transformation`, `python-transformation`,
@@ -149,28 +149,27 @@ markdown-it. Tabs:
 - **`/api/llm-knowledge`** — one JSON with everything a model needs to
   reason about the project (see Browser UI above).
 
-## What's next (Phase 2, not shipping)
+## Development plan
 
-- **Warehouse adapters**: Snowflake, BigQuery, JDBC. Stubs exist;
-  real `materialize_sql`, `MERGE INTO` incrementals, Arrow-backed
-  `fetch_ref` are Phase 2 work. Unlocks the **one project → many
-  backends** story (see below).
-- **Keboola component**: Docker wrapper runs today against static
+Rationale in [`docs/VISION.md`](docs/VISION.md), sequencing in
+[`docs/STRATEGY.md`](docs/STRATEGY.md), task list in
+[`docs/ROADMAP.md`](docs/ROADMAP.md); weekly snapshot in
+[`docs/STATUS.md`](docs/STATUS.md) (Czech).
+
+### Phase 2 — adapters and Keboola
+
+- **Warehouse adapters:** Snowflake, BigQuery, JDBC. Stubs exist;
+  real `materialize_sql`, `MERGE INTO` incrementals, and
+  Arrow-backed `fetch_ref` are the Phase 2 scope. Unlocks the
+  one-project-many-backends story below.
+- **Keboola component:** Docker wrapper runs today against static
   Storage exports; real SAPI output upload + dev/prod branch mapping
-  are pending.
-- **OpenLineage runtime emitter**: skeleton in
+  land here.
+- **OpenLineage runtime emitter:** skeleton in
   `juncture.observability.lineage`; static export via
   `/api/manifest/openlineage` already works.
 
-Track it in [`docs/ROADMAP.md`](docs/ROADMAP.md); weekly snapshot in
-[`docs/STATUS.md`](docs/STATUS.md) (Czech).
-
-## Development plan (v0.40.0)
-
-Rationale in [`docs/VISION.md`](docs/VISION.md), sequencing in
-[`docs/STRATEGY.md`](docs/STRATEGY.md#phase-4--v20-differentiators),
-task list in
-[`docs/ROADMAP.md`](docs/ROADMAP.md#phase-4--v20-differentiators).
+### Phase 4 — differentiators (tracking towards v0.40.0)
 
 - **Backend arbitrage via dialect translation.** The same project
   runs on DuckDB locally and on Snowflake / BigQuery / JDBC in
@@ -199,9 +198,9 @@ task list in
   the MCP server (Phase 3). Goal: a working pipeline from a
   sentence, without opening a Jinja macro.
 
-v0.40.0 ships when two of the five are demoed on a real customer
-pipeline (see [`docs/STRATEGY.md`](docs/STRATEGY.md) Phase 4
-done-done criterion).
+v0.40.0 ships when two of the five Phase 4 items are demoed on a
+real customer pipeline (see [`docs/STRATEGY.md`](docs/STRATEGY.md)
+Phase 4 done-done criterion).
 
 ## Example minimal Python model
 
