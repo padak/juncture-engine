@@ -47,9 +47,7 @@ def test_dry_run_does_not_open_duckdb(tmp_path: Path) -> None:
     plan = Runner().plan(RunRequest(project_path=project))
 
     # The whole point: plan() must not open the database.
-    assert not db_file.exists(), (
-        "dry-run created a DuckDB file — Runner.plan should never open the adapter"
-    )
+    assert not db_file.exists(), "dry-run created a DuckDB file — Runner.plan should never open the adapter"
     # And the report must still be well-formed.
     assert plan.project_name == "dryrun_exec"
     assert plan.model_layers == 1  # single EXECUTE model, one model-level layer
@@ -89,9 +87,7 @@ connections:
 """
     )
     (project / "models" / "stg.sql").write_text("SELECT 1 AS id")
-    (project / "models" / "downstream.sql").write_text(
-        "SELECT id * 2 AS doubled FROM {{ ref('stg') }}"
-    )
+    (project / "models" / "downstream.sql").write_text("SELECT id * 2 AS doubled FROM {{ ref('stg') }}")
     plan = Runner().plan(RunRequest(project_path=project))
 
     assert plan.model_layers == 2
@@ -101,6 +97,47 @@ connections:
     assert by_name["downstream"].depends_on == ["stg"]
     assert by_name["stg"].layer == 1
     assert by_name["downstream"].layer == 2
+
+
+def test_dry_run_separates_seeds_from_models(tmp_path: Path) -> None:
+    """Seeds live in project.models as ModelKind.SEED so ref() resolves, but
+    dry-run must list them *only* under ``plan.seeds`` — not mixed into the
+    model-layer table (which was a real UX regression on the Slevomat
+    project: 208 seeds appeared as "layer 1" rows alongside the actual
+    model).
+    """
+    project = tmp_path / "seedsep"
+    (project / "models").mkdir(parents=True)
+    (project / "seeds").mkdir(parents=True)
+    # One seed that a model reads, plus one standalone model.
+    (project / "seeds" / "orders.csv").write_text("id,amount\n1,100\n2,200\n")
+    (project / "juncture.yaml").write_text(
+        f"""name: seedsep
+profile: local
+default_schema: main
+
+connections:
+  local:
+    type: duckdb
+    path: {project}/seedsep.duckdb
+"""
+    )
+    (project / "models" / "summary.sql").write_text(
+        "SELECT SUM(amount) AS total FROM {{ ref('orders') }}"
+    )
+
+    plan = Runner().plan(RunRequest(project_path=project))
+
+    seed_names = {s.name for s in plan.seeds}
+    model_names = {m.name for m in plan.models}
+
+    assert "orders" in seed_names
+    assert "orders" not in model_names, (
+        "seed leaked into plan.models — dry-run would mix it with actual models"
+    )
+    assert model_names == {"summary"}
+    # Model layer count counts only non-seed nodes.
+    assert plan.model_layers == 1
 
 
 def test_dry_run_respects_selectors(tmp_path: Path) -> None:

@@ -182,21 +182,35 @@ class Runner:
             for seed in project.seeds
         ]
 
+        # Seeds live in project.models with ModelKind.SEED so ref() resolution
+        # works, but they're loaded *before* the DAG and shouldn't appear in
+        # the model-layer listing. Restrict the DAG to non-seed nodes for
+        # layer computation; seeds are already reported via plan.seeds.
         by_name: dict[str, Model] = {m.name: m for m in project.models}
+        model_names = {
+            name for name in dag.nodes
+            if (m := by_name.get(name)) is not None and m.kind is not ModelKind.SEED
+        }
+        model_dag = dag.subgraph(model_names) if model_names else dag
+
         model_nodes: list[DryRunNode] = []
-        layers = list(dag.layers())
+        layers = list(model_dag.layers()) if model_names else []
         for layer_idx, layer in enumerate(layers):
             for name in layer:
                 model = by_name.get(name)
                 if model is None:
-                    # Selector could leave an orphan reference — skip gracefully.
                     continue
                 model_nodes.append(
                     DryRunNode(
                         name=model.name,
                         kind=model.kind.value,
                         materialization=model.materialization.value,
-                        depends_on=sorted(model.depends_on),
+                        # Strip seed names from depends_on for readability —
+                        # the seed list is already shown separately.
+                        depends_on=sorted(
+                            d for d in model.depends_on
+                            if (dm := by_name.get(d)) is None or dm.kind is not ModelKind.SEED
+                        ),
                         layer=layer_idx + 1,
                         intra=_intra_script_stats(model),
                     )
