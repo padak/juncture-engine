@@ -11,7 +11,8 @@ Routes:
 
 - ``GET /`` → ``static/index.html``
 - ``GET /assets/<path>`` → files under ``static/``
-- ``GET /api/manifest`` → DAG + per-model metadata (disabled, tags)
+- ``GET /api/manifest`` → DAG + per-model metadata (disabled, tags, path)
+- ``GET /api/models/<name>`` → per-model detail (source + columns + tests)
 - ``GET /api/runs`` → ``?limit=N`` run history summary
 - ``GET /api/runs/<run_id>`` → the full entry for that run
 - ``GET /api/project`` → project name + config snapshot
@@ -31,10 +32,12 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+from juncture.core.model import Model, ModelKind
 from juncture.core.project import Project
 from juncture.core.run_history import read_runs
+from juncture.parsers.sqlglot_parser import render_refs
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +93,12 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                     self._send_json(self._project_payload())
                 elif path == "/api/manifest":
                     self._send_json(self._manifest_payload())
+                elif path.startswith("/api/models/"):
+                    name = unquote(path[len("/api/models/") :])
+                    if not name:
+                        self._send_error(404, "Not found")
+                        return
+                    self._send_json(self._model_detail_payload(name))
                 elif path == "/api/runs":
                     query = parse_qs(parsed.query or "")
                     limit = int(query.get("limit", ["50"])[0])
@@ -132,11 +141,75 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                         "disabled": m.disabled,
                         "description": m.description,
                         "schedule_cron": m.schedule_cron,
+                        "path": _relative_path(m, project.root),
                     }
                     for m in dag.models()
                 ],
                 "order": dag.topological_order(),
                 "edges": [{"from": src, "to": tgt} for src in dag.nodes for tgt in dag.downstream(src)],
+            }
+
+        def _model_detail_payload(self, name: str) -> dict[str, Any]:
+            project = Project.load(project_path)
+            model = next((m for m in project.models if m.name == name), None)
+            if model is None:
+                raise FileNotFoundError(name)
+
+            sql_body: str | None = None
+            sql_rendered: str | None = None
+            python_source: str | None = None
+            if model.kind is ModelKind.SQL and model.sql is not None:
+                sql_body = model.sql
+                resolver = {m.name: f"{project.config.default_schema}.{m.name}" for m in project.models}
+                sql_rendered = render_refs(model.sql, resolver)
+            elif model.kind is ModelKind.PYTHON and model.path is not None:
+                try:
+                    python_source = model.path.read_text()
+                except OSError:
+                    python_source = None
+
+            columns = [
+                {
+                    "name": c.name,
+                    "description": c.description,
+                    "tests": list(c.tests),
+                    "data_type": c.data_type,
+                }
+                for c in model.columns
+            ]
+            # Column-level tests become a flat list so the frontend can
+            # render them as a single table without reassembling.
+            # ColumnSpec.tests is annotated list[str], but schema.yml lets
+            # the element be a dict too (``- relationships: {...}``);
+            # the Any cast reflects that runtime flexibility.
+            tests: list[dict[str, Any]] = []
+            for c in model.columns:
+                for raw in c.tests:
+                    t: Any = raw
+                    if isinstance(t, str):
+                        tests.append({"column": c.name, "name": t, "config": {}})
+                        continue
+                    if isinstance(t, dict) and t:
+                        # schema.yml dict form: ``- relationships: {to: ref('x'), field: id}``
+                        test_name, cfg = next(iter(t.items()))
+                        tests.append({"column": c.name, "name": test_name, "config": cfg or {}})
+
+            return {
+                "name": model.name,
+                "kind": model.kind.value,
+                "materialization": model.materialization.value,
+                "path": _relative_path(model, project.root),
+                "description": model.description,
+                "depends_on": sorted(model.depends_on),
+                "tags": list(model.tags),
+                "disabled": model.disabled,
+                "schedule_cron": model.schedule_cron,
+                "config": dict(model.config),
+                "columns": columns,
+                "tests": tests,
+                "sql": sql_body,
+                "sql_rendered": sql_rendered,
+                "python_source": python_source,
             }
 
         def _runs_payload(self, *, limit: int) -> dict[str, Any]:
@@ -207,3 +280,19 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(body)
 
     return JunctureHandler
+
+
+def _relative_path(model: Model, root: Path) -> str | None:
+    """Return the model's file path relative to the project root.
+
+    Seeds may live outside the models directory (parquet dirs, symlinked
+    seed pools); we still surface a path so the frontend can hint where
+    the source lives, falling back to the absolute path when ``relative_to``
+    raises ``ValueError``.
+    """
+    if model.path is None:
+        return None
+    try:
+        return str(model.path.relative_to(root))
+    except ValueError:
+        return str(model.path)
