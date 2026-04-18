@@ -138,11 +138,19 @@ Další Phase 1 přídavky:
   4 CPU). Detail: [`BENCHMARKS.md`](BENCHMARKS.md) §Pilot-migration.
 - **Intra-script parallel EXECUTE race condition (P3).** Dnes nuceně
   `parallelism: 1` na migrovaných bodies — blokuje jeden z benchmark scénářů.
+  **Neblokuje Phase 1 gate**, ale je to první rozumný Phase 2 side quest.
 - **kbagent OOM bug** reported proti
   <https://github.com/padak/keboola_agent_cli>. Nevlastní Juncture, ale limituje
   migrace dostatečně velkých projektů.
-- **Web render not started.** Binding gate Phase 1 → Phase 2 leží na zelené
-  louce; dokud neproběhne, nezačínáme na Snowflake/BigQuery/Postgres adaptérech.
+- **Ephemeral materializace dnes vyrobí VIEW, ne pravé CTE inlinování.**
+  `duckdb_adapter._build_materialization_statement` pro `EPHEMERAL` spouští
+  `CREATE OR REPLACE VIEW`, ale [`DESIGN.md`](DESIGN.md) §3.5 říká "inlined
+  upstream at render time". Funkčně OK pro DuckDB (downstream SELECT trefí
+  view bez kopie), ale na Snowflake/BigQuery by se choval jinak než dbt.
+  Dořešit v Phase 2 spolu s adaptéry.
+- **`{{ var() }}` v SQL vyžaduje `jinja: true`.** Dnešní mini-makro parser
+  zná jen `ref()`. Bez `jinja: true` flagu projde `{{ var('x') }}` SQLGlotu
+  verbatim a rozbije parse. Dopsat do [`CONFIGURATION.md`](CONFIGURATION.md).
 
 ## Co NENÍ teď priorita
 
