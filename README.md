@@ -14,6 +14,10 @@ components (`snowflake-transformation`, `python-transformation`,
 and Python share one DAG, data tests are first-class, and every
 workflow is callable from a stable JSON CLI built for agents.
 
+*The name: a juncture is a meeting point. SQL meets Python in one
+DAG; local DuckDB meets production warehouses via SQLGlot; four
+legacy Keboola components collapse into one engine.*
+
 <p align="center">
   <img src="docs/images/web1.png" alt="Juncture web UI — DAG tab with Metadata sidebar showing governance, reliability sparkline, PII ring propagation" width="880">
   <br><em>The DAG tab: shape encodes kind (seed / SQL / Python), border encodes last-run status, the pink ring propagates PII from flagged seeds. Sidebar shows Metadata + Source + Schema + Tests for the selected model.</em>
