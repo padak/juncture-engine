@@ -166,6 +166,29 @@ migration from ~26 repair rounds to 2–3.
       [`BENCHMARKS.md`](BENCHMARKS.md) — seven scenarios (monolith
       cold/warm, parallel EXECUTE, split DAG cold + threads 1/4/8).
 
+### 1.8 Web UI v2 — proposed
+
+Plan in [`docs/rfcs/0001-web-ui-v2.md`](rfcs/0001-web-ui-v2.md).
+Four milestones (M1–M4) that extend the Phase 1 web render from
+"glance only" to a tool usable by both a data engineer (source
+view, diagnostics, seeds, reliability) and a CDO (ownership, SLA,
+PII propagation, portfolio view). Runs in parallel with Phase 2
+adapter work — neither blocks the other.
+
+- [ ] **M1 — P0 "readable"**: source viewer, kind-vs-status split,
+      clickable per-model drill-down in Runs, tests panel.
+      (~1 engineer-day.)
+- [ ] **M2 — P1 project overview + search + export**:
+      `juncture.yaml` + README render, fulltext DAG search,
+      manifest / OpenLineage export. (~2 engineer-days.)
+- [ ] **M3 — P1 diagnostics + seeds + reliability**: diagnostics
+      bucket panel, seeds tab with sentinels, per-model
+      last-20-runs sparkline. (~1–2 engineer-days.)
+- [ ] **M4 — P2 governance**: `schema.yml` gains `owner` / `team` /
+      `criticality` / `sla` / `docs`; Portfolio tab, data contracts
+      view, PII / retention badges, reliability dashboard.
+      (~3 engineer-days; two PRs — schema change first, UI second.)
+
 ## Phase 2 — Production backends + Keboola component
 
 Goal: the same project runs locally on DuckDB and in production on

@@ -130,6 +130,15 @@ Další Phase 1 přídavky:
 
 **Můžeme začít Phase 2 (Snowflake/BigQuery/Postgres adaptéry).**
 
+## Paralelní track: Web UI v2
+
+Po prvním použití Phase 1 web render (PR #5) vypadlo pět konkrétních
+vad, které shrnuje RFC [`docs/rfcs/0001-web-ui-v2.md`](rfcs/0001-web-ui-v2.md).
+Čtyři milníky M1–M4 (viz [`ROADMAP.md`](ROADMAP.md) §1.8) přidají
+source viewer, diagnostics v prohlížeči, seeds tab a CDO portfolio
+vrstvu. Běží paralelně s Phase 2 adaptéry — žádný track neblokuje
+druhý. RFC je **proposed**, čeká na sign-off.
+
 ## Risks / open questions
 
 - **Split-execute vs monolith EXECUTE performance tradeoff — vyřešeno.**
