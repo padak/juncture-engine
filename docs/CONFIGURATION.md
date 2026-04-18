@@ -122,6 +122,42 @@ models:
               values: [completed, refunded, pending]
 ```
 
+### Governance fields (RFC 0001 M4)
+
+All optional; omit everything and the Portfolio / Contracts / Compliance
+tabs in `juncture web` render with empty columns and nothing else changes.
+
+```yaml
+models:
+  - name: customer_segments
+    description: Bucket customers into vip/loyal/regular/at_risk/lost.
+    docs: docs/customer_segments.md       # long-form markdown shown in Metadata tab
+    owner: marketing-data@example.com     # email or team handle
+    team: analytics
+    business_unit: Marketing
+    criticality: tier-1                   # convention: tier-1 / tier-2 / tier-3
+    sla:
+      freshness_hours: 24                 # alert threshold
+      success_rate_target: 0.99           # 30-day rolling minimum
+    consumers:
+      - name: Exec dashboard
+        url: https://bi.example/execs
+      - Retention team                    # bare string → {name: "Retention team"}
+```
+
+Seed governance uses a parallel set of keys:
+
+```yaml
+# seeds/schema.yml
+seeds:
+  - name: customers
+    source_system: keboola_storage        # freeform: keboola / s3 / snowflake / ...
+    source_locator: "in.c-main.customers" # bucket+table, S3 URL, etc.
+    pii: true                             # propagates ring colour to downstream models
+    retention_days: 365
+    owner: data-platform@example.com
+```
+
 ## Parallel EXECUTE materialization
 
 Models with ``materialization: execute`` run their multi-statement body

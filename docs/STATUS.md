@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `feat/web-v2-diagnostics` · **M3 (web UI v2) in flight**; M1+M2 merged (#8, #9).
+> **Last updated:** 2026-04-18 · branch `feat/web-v2-governance` · **M4 PR1 (schema) in flight**; M1-M3 merged (#8, #9, #10).
 
 ## Point: co a proč děláme
 
@@ -143,8 +143,8 @@ druhý.
 |---|---|---|
 | M1 — P0 "readable" | `feat/web-v2-readable` | **merged (#8)** — source viewer + kind/status split + clickable Runs drawer + tests panel |
 | M2 — P1 overview + search + export | `feat/web-v2-overview` | **merged (#9)** — Project tab (juncture.yaml + README + git) + DAG search + manifest/OpenLineage download |
-| M3 — P1 diagnostics + seeds + reliability | `feat/web-v2-diagnostics` | **v letu** — Seeds tab + Diagnostics bucket panel + reliability sparkline + LLM knowledge download |
-| M4 — P2 governance | `feat/web-v2-governance` + `feat/web-v2-compliance` | pending |
+| M3 — P1 diagnostics + seeds + reliability | `feat/web-v2-diagnostics` | **merged (#10)** — Seeds tab + Diagnostics bucket panel + reliability sparkline + LLM knowledge download |
+| M4 — P2 governance | `feat/web-v2-governance` + `feat/web-v2-compliance` | **v letu (PR1/2)** — schema.yml + seeds schema gain owner/team/criticality/SLA/docs/consumers + pii/retention/source_system |
 
 ## Risks / open questions
 
