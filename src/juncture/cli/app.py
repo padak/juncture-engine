@@ -138,6 +138,7 @@ def compile(
                     "materialization": m.materialization.value,
                     "depends_on": sorted(m.depends_on),
                     "tags": m.tags,
+                    "disabled": m.disabled,
                 }
                 for m in dag.models()
             ],
@@ -234,9 +235,25 @@ def run(
         "and collect every primary error into the run report. Intended for migration "
         "triage — pair with `juncture diagnostics` to classify the errors.",
     ),
+    disable: list[str] = typer.Option(
+        [],
+        "--disable",
+        help="Comma-separated model names to disable for this run. Disabled models "
+        "are reported as status=disabled and their downstream as skipped "
+        "(upstream_disabled); the run does not fail.",
+    ),
+    enable_only: list[str] = typer.Option(
+        [],
+        "--enable-only",
+        help="Inverse of --disable: disable every model not in this list.",
+    ),
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
+    # Typer gives us list[str]; flatten comma-separated values so
+    # `--disable a,b,c` == `--disable a --disable b --disable c`.
+    disable_flat = [x.strip() for item in disable for x in item.split(",") if x.strip()]
+    enable_only_flat = [x.strip() for item in enable_only for x in item.split(",") if x.strip()]
     request = RunRequest(
         project_path=project.resolve(),
         select=select,
@@ -249,6 +266,8 @@ def run(
         reuse_seeds=reuse_seeds,
         parallelism_override=parallelism,
         continue_on_error=continue_on_error,
+        disable_models=disable_flat,
+        enable_only=enable_only_flat if enable_only_flat else None,
     )
     if dry_run:
         plan = Runner().plan(request)
@@ -268,6 +287,7 @@ def run(
         "failed": "red",
         "skipped": "yellow",
         "partial": "yellow",
+        "disabled": "dim",
     }
     for r in report.models.runs:
         status_style = status_colors.get(r.status, "white")

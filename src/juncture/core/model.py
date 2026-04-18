@@ -66,6 +66,13 @@ class Model:
     cluster_by: list[str] | None = None
     schedule_cron: str | None = None
 
+    #: Author-declared "don't run this model" flag from schema.yml.
+    #: Distinct from skipped (upstream failed): disabled is an explicit
+    #: opt-out that does not mark the run as failed. Downstream models
+    #: receive status=skipped with reason=upstream_disabled so they can
+    #: be visually distinguished from cascade-failure skips.
+    disabled: bool = False
+
     def __post_init__(self) -> None:
         if self.kind is ModelKind.SQL and self.sql is None:
             raise ValueError(f"SQL model {self.name!r} requires non-empty sql")

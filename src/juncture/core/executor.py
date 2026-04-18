@@ -30,10 +30,15 @@ log = logging.getLogger(__name__)
 @dataclass(kw_only=True)
 class ModelRun:
     model: Model
-    status: str  # "success" | "failed" | "skipped" | "partial"
+    # "success" | "failed" | "skipped" | "partial" | "disabled"
+    status: str
     result: MaterializationResult | None = None
     error: str | None = None
     elapsed_seconds: float = 0.0
+    # For skipped runs, the reason distinguishes upstream_failure vs
+    # upstream_disabled so the UI can colour them differently. Unset
+    # for all other statuses.
+    skipped_reason: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -52,6 +57,16 @@ class ExecutionResult:
     @property
     def skipped(self) -> int:
         return sum(1 for r in self.runs if r.status == "skipped")
+
+    @property
+    def disabled(self) -> int:
+        """Number of models marked as disabled in schema.yml / via --disable.
+
+        A disabled model does not run and does not count as a failure —
+        its descendants are skipped with reason=upstream_disabled, also
+        without the failure cascade firing.
+        """
+        return sum(1 for r in self.runs if r.status == "disabled")
 
     @property
     def partial(self) -> int:
@@ -98,19 +113,55 @@ class Executor:
         result = ExecutionResult()
         t0 = time.perf_counter()
         failed_ancestors: set[str] = set()
+        disabled_ancestors: set[str] = set()
 
         for layer_index, layer in enumerate(dag.layers()):
-            runnable = [name for name in layer if name not in failed_ancestors]
-            skipped = [name for name in layer if name in failed_ancestors]
+            runnable: list[str] = []
+            skipped_upstream_failed: list[str] = []
+            skipped_upstream_disabled: list[str] = []
+            disabled_now: list[str] = []
+            for name in layer:
+                model = dag.model(name)
+                if name in failed_ancestors:
+                    skipped_upstream_failed.append(name)
+                elif name in disabled_ancestors:
+                    skipped_upstream_disabled.append(name)
+                elif model.disabled:
+                    disabled_now.append(name)
+                else:
+                    runnable.append(name)
 
-            for name in skipped:
+            for name in skipped_upstream_failed:
                 result.runs.append(
                     ModelRun(
                         model=dag.model(name),
                         status="skipped",
                         error="upstream failure",
+                        skipped_reason="upstream_failure",
                     )
                 )
+            for name in skipped_upstream_disabled:
+                result.runs.append(
+                    ModelRun(
+                        model=dag.model(name),
+                        status="skipped",
+                        error="upstream disabled",
+                        skipped_reason="upstream_disabled",
+                    )
+                )
+            for name in disabled_now:
+                result.runs.append(
+                    ModelRun(
+                        model=dag.model(name),
+                        status="disabled",
+                        error=None,
+                    )
+                )
+                # Propagate: everything downstream of a disabled model is
+                # implicitly skipped for "upstream_disabled" reason, but
+                # crucially *does not* mark the run as failed.
+                disabled_ancestors.update(dag.downstream(name))
+                disabled_ancestors.update(_all_descendants(dag, name))
 
             if not runnable:
                 continue
