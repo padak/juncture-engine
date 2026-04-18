@@ -12,10 +12,14 @@ Routes:
 - ``GET /`` → ``static/index.html``
 - ``GET /assets/<path>`` → files under ``static/``
 - ``GET /api/manifest`` → DAG + per-model metadata (disabled, tags, path)
+- ``GET /api/manifest/openlineage`` → manifest in OpenLineage RunEvent shape
 - ``GET /api/models/<name>`` → per-model detail (source + columns + tests)
 - ``GET /api/runs`` → ``?limit=N`` run history summary
 - ``GET /api/runs/<run_id>`` → the full entry for that run
 - ``GET /api/project`` → project name + config snapshot
+- ``GET /api/project/config`` → full ``juncture.yaml`` parsed shape
+- ``GET /api/project/readme`` → raw README markdown (if present)
+- ``GET /api/project/git`` → last commit + branch (best-effort)
 
 Everything returns JSON with ``Content-Type: application/json;
 charset=utf-8``; static assets set their MIME type from the file
@@ -28,15 +32,19 @@ import contextlib
 import json
 import logging
 import mimetypes
+import subprocess
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+import yaml
+
 from juncture.core.model import Model, ModelKind
 from juncture.core.project import Project
 from juncture.core.run_history import read_runs
+from juncture.observability.lineage import manifest_to_openlineage_events
 from juncture.parsers.sqlglot_parser import render_refs
 
 log = logging.getLogger(__name__)
@@ -91,8 +99,16 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                     self._send_static(path[len("/assets/") :])
                 elif path == "/api/project":
                     self._send_json(self._project_payload())
+                elif path == "/api/project/config":
+                    self._send_json(self._project_config_payload())
+                elif path == "/api/project/readme":
+                    self._send_json(self._project_readme_payload())
+                elif path == "/api/project/git":
+                    self._send_json(self._project_git_payload())
                 elif path == "/api/manifest":
                     self._send_json(self._manifest_payload())
+                elif path == "/api/manifest/openlineage":
+                    self._send_json(self._manifest_openlineage_payload())
                 elif path.startswith("/api/models/"):
                     name = unquote(path[len("/api/models/") :])
                     if not name:
@@ -147,6 +163,90 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                 ],
                 "order": dag.topological_order(),
                 "edges": [{"from": src, "to": tgt} for src in dag.nodes for tgt in dag.downstream(src)],
+            }
+
+        def _manifest_openlineage_payload(self) -> dict[str, Any]:
+            # Reuses the manifest builder so the two exports stay in sync.
+            manifest = self._manifest_payload()
+            return {
+                "project": manifest["project"],
+                "events": manifest_to_openlineage_events(manifest),
+            }
+
+        def _project_config_payload(self) -> dict[str, Any]:
+            """Return the parsed ``juncture.yaml`` as pure JSON (no env interpolation).
+
+            We read the raw YAML text so the user sees exactly what they
+            have on disk, including any ``${VAR}`` placeholders (the UI
+            should show these verbatim — resolving them would leak env-var
+            values into the browser, which we never want).
+            """
+            project = Project.load(project_path)
+            yaml_path = project.root / "juncture.yaml"
+            try:
+                raw_text = yaml_path.read_text()
+            except OSError:
+                raw_text = ""
+            try:
+                parsed = yaml.safe_load(raw_text) or {}
+            except yaml.YAMLError as exc:
+                parsed = {"_parse_error": str(exc)}
+            return {
+                "path": str(yaml_path.relative_to(project.root)) if yaml_path.exists() else None,
+                "raw": raw_text,
+                "parsed": parsed,
+            }
+
+        def _project_readme_payload(self) -> dict[str, Any]:
+            """Return README.md markdown if present, else ``markdown: null``.
+
+            Case-insensitive filename match (README.md / readme.md) so the
+            endpoint works across case-preserving filesystems.
+            """
+            project = Project.load(project_path)
+            for candidate in ("README.md", "readme.md", "Readme.md"):
+                target = project.root / candidate
+                if target.is_file():
+                    return {"filename": candidate, "markdown": target.read_text()}
+            return {"filename": None, "markdown": None}
+
+        def _project_git_payload(self) -> dict[str, Any]:
+            """Return last-commit info + branch via ``git``; best-effort.
+
+            Falls back to ``available=False`` when the project is not a
+            git checkout, git is missing, or the shell-out fails.
+            Important for the Keboola Docker wrapper (RFC §12 q.2),
+            where ``git`` is intentionally absent.
+            """
+            project = Project.load(project_path)
+            try:
+                commit = subprocess.run(
+                    ["git", "-C", str(project.root), "log", "-1", "--pretty=%H%n%s%n%an%n%ae%n%aI"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=3,
+                )
+                branch = subprocess.run(
+                    ["git", "-C", str(project.root), "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=3,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return {"available": False}
+            parts = commit.stdout.rstrip("\n").split("\n")
+            if len(parts) < 5:
+                return {"available": False}
+            return {
+                "available": True,
+                "sha": parts[0],
+                "subject": parts[1],
+                "author": parts[2],
+                "email": parts[3],
+                "date": parts[4],
+                "branch": branch.stdout.strip(),
             }
 
         def _model_detail_payload(self, name: str) -> dict[str, Any]:

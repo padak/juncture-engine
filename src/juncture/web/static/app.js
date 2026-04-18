@@ -12,11 +12,15 @@
 
   // --- API ------------------------------------------------------------
   const api = {
-    project:  () => fetch("/api/project").then(r => r.json()),
-    manifest: () => fetch("/api/manifest").then(r => r.json()),
-    model:    (name) => fetch(`/api/models/${encodeURIComponent(name)}`).then(r => r.json()),
-    runs:     (limit = 50) => fetch(`/api/runs?limit=${limit}`).then(r => r.json()),
-    run:      (id) => fetch(`/api/runs/${encodeURIComponent(id)}`).then(r => r.json()),
+    project:      () => fetch("/api/project").then(r => r.json()),
+    projectCfg:   () => fetch("/api/project/config").then(r => r.json()),
+    projectReadme:() => fetch("/api/project/readme").then(r => r.json()),
+    projectGit:   () => fetch("/api/project/git").then(r => r.json()),
+    manifest:     () => fetch("/api/manifest").then(r => r.json()),
+    manifestOL:   () => fetch("/api/manifest/openlineage").then(r => r.json()),
+    model:        (name) => fetch(`/api/models/${encodeURIComponent(name)}`).then(r => r.json()),
+    runs:         (limit = 50) => fetch(`/api/runs?limit=${limit}`).then(r => r.json()),
+    run:          (id) => fetch(`/api/runs/${encodeURIComponent(id)}`).then(r => r.json()),
   };
 
   // --- Tab switching (top bar) ----------------------------------------
@@ -25,6 +29,16 @@
       const target = btn.dataset.view;
       document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
       document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${target}`));
+      if (target === "project" && !projectTabLoaded) {
+        renderProjectTab();
+        projectTabLoaded = true;
+      }
+      // Cytoscape needs an explicit resize + layout kick after its container
+      // goes from display:none back to visible, otherwise the canvas is blank.
+      if (target === "dag" && cyInstance) {
+        cyInstance.resize();
+        cyInstance.fit(undefined, 24);
+      }
     });
   });
 
@@ -36,6 +50,8 @@
   let currentModelDetail = null;
   let currentDetailTab = "metadata";
   let sourceView = "rendered";  // "rendered" | "raw"
+  let cyInstance = null;       // cytoscape handle — kept so search can fade nodes
+  let projectTabLoaded = false;
 
   // --- DAG render -----------------------------------------------------
   async function renderDag() {
@@ -98,6 +114,7 @@
           "opacity": 0.5, "border-style": "dashed", "border-color": "#9aa0a6",
         }},
         { selector: "node:selected", style: { "border-width": 5 } },
+        { selector: ".faded", style: { "opacity": 0.2 } },
         { selector: "edge", style: {
           "width": 1.2, "line-color": "#c6c8cd", "target-arrow-color": "#c6c8cd",
           "target-arrow-shape": "triangle", "curve-style": "bezier",
@@ -109,7 +126,61 @@
       const name = evt.target.id();
       selectModel(name);
     });
+    cyInstance = cy;
   }
+
+  // --- DAG search ------------------------------------------------------
+  function applySearch(query) {
+    if (!cyInstance) return;
+    const q = (query || "").trim().toLowerCase();
+    if (!q) {
+      cyInstance.nodes().removeClass("faded");
+      cyInstance.edges().removeClass("faded");
+      return;
+    }
+    const matchers = manifestCache ? manifestCache.models.filter(m => {
+      const tags = (m.tags || []).join(" ").toLowerCase();
+      const desc = (m.description || "").toLowerCase();
+      return m.name.toLowerCase().includes(q) || tags.includes(q) || desc.includes(q);
+    }).map(m => m.name) : [];
+    const matchSet = new Set(matchers);
+    cyInstance.nodes().forEach(n => n.toggleClass("faded", !matchSet.has(n.id())));
+    cyInstance.edges().forEach(e => {
+      const keep = matchSet.has(e.source().id()) && matchSet.has(e.target().id());
+      e.toggleClass("faded", !keep);
+    });
+  }
+
+  // Debounced listener — small projects don't need it, but 300-model DAGs do.
+  let searchTimer = null;
+  const searchInput = document.getElementById("dag-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => applySearch(searchInput.value), 90);
+    });
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { searchInput.value = ""; applySearch(""); }
+    });
+  }
+
+  // --- Manifest / OpenLineage downloads --------------------------------
+  function downloadJson(filename, payload) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+  const dlManifest = document.getElementById("dl-manifest");
+  const dlOpenLineage = document.getElementById("dl-openlineage");
+  if (dlManifest) dlManifest.addEventListener("click", async () => {
+    downloadJson("manifest.json", await api.manifest());
+  });
+  if (dlOpenLineage) dlOpenLineage.addEventListener("click", async () => {
+    downloadJson("manifest.openlineage.json", await api.manifestOL());
+  });
 
   // --- Model detail (four-tab sidebar) ---------------------------------
   async function selectModel(name) {
@@ -444,6 +515,77 @@
     container.innerHTML = html;
     if (window.Prism) {
       container.querySelectorAll("pre code").forEach(c => Prism.highlightElement(c));
+    }
+  }
+
+  // --- Project tab ----------------------------------------------------
+  async function renderProjectTab() {
+    const pane = document.getElementById("project-pane");
+    pane.innerHTML = '<div class="detail-empty">Loading project overview&hellip;</div>';
+    try {
+      const [project, cfg, readme, git] = await Promise.all([
+        api.project(), api.projectCfg(), api.projectReadme(), api.projectGit(),
+      ]);
+      const readmeHtml = readme.markdown && window.markdownit
+        ? window.markdownit({ html: false, linkify: true, typographer: true }).render(readme.markdown)
+        : null;
+      const gitBlock = git.available ? `
+        <div class="proj-card">
+          <h2 style="margin-top:0;">Git</h2>
+          <div class="proj-git-row">branch: <code>${escape(git.branch)}</code></div>
+          <div class="proj-git-row">commit: <code>${escape(git.sha.substring(0, 10))}</code> &mdash; ${escape(git.subject)}</div>
+          <div class="proj-git-row">author: ${escape(git.author)} &lt;${escape(git.email)}&gt;</div>
+          <div class="proj-git-row">date: ${escape(git.date)}</div>
+        </div>` : "";
+      const cfgParsed = cfg.parsed || {};
+      const connRows = Object.entries(cfgParsed.connections || {}).map(([name, c]) => `
+        <tr><td><code>${escape(name)}</code></td><td><code>${escape(c.type || "")}</code></td>
+            <td>${Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) =>
+              `<code>${escape(k)}=${escape(String(v))}</code>`).join(" ")}</td></tr>`).join("");
+      const varsRows = Object.entries(cfgParsed.vars || {}).map(([k, v]) =>
+        `<tr><td><code>${escape(k)}</code></td><td><code>${escape(String(v))}</code></td></tr>`).join("");
+      pane.innerHTML = `
+        <h2>Overview</h2>
+        <div class="proj-card">
+          <dl class="kv">
+            <dt>Name</dt><dd><strong>${escape(project.name)}</strong></dd>
+            <dt>Version</dt><dd><code>${escape(project.version)}</code></dd>
+            <dt>Profile</dt><dd><code>${escape(project.profile)}</code></dd>
+            <dt>Path</dt><dd><code>${escape(project.path)}</code></dd>
+            <dt>Default materialization</dt><dd><code>${escape(project.default_materialization)}</code></dd>
+            <dt>Default schema</dt><dd><code>${escape(project.default_schema)}</code></dd>
+          </dl>
+        </div>
+
+        ${gitBlock}
+
+        <h2>juncture.yaml &mdash; connections</h2>
+        <div class="proj-card">
+          ${connRows ? `<table class="schema-table">
+            <thead><tr><th>Name</th><th>Type</th><th>Params</th></tr></thead>
+            <tbody>${connRows}</tbody>
+          </table>` : "<em>No connections declared.</em>"}
+        </div>
+
+        <h2>juncture.yaml &mdash; vars</h2>
+        <div class="proj-card">
+          ${varsRows ? `<table class="schema-table">
+            <thead><tr><th>Key</th><th>Value</th></tr></thead>
+            <tbody>${varsRows}</tbody>
+          </table>` : "<em>No vars declared.</em>"}
+        </div>
+
+        <h2>juncture.yaml &mdash; raw</h2>
+        <div class="proj-card"><pre><code class="language-yaml">${escape(cfg.raw || "")}</code></pre></div>
+
+        <h2>README</h2>
+        <div class="proj-card">
+          ${readmeHtml
+            ? `<div class="proj-readme">${readmeHtml}</div>`
+            : "<em>No README.md found at the project root.</em>"}
+        </div>`;
+    } catch (e) {
+      pane.innerHTML = `<div class="detail-empty">Load failed: ${escape(e.message)}</div>`;
     }
   }
 

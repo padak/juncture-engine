@@ -182,9 +182,14 @@ adapter work — neither blocks the other.
       DAG now encodes kind as shape+fill and status as border
       thickness/colour so seed / SQL / Python are distinguishable
       even on all-success runs.
-- [ ] **M2 — P1 project overview + search + export**:
+- [x] **M2 — P1 project overview + search + export**:
       `juncture.yaml` + README render, fulltext DAG search,
-      manifest / OpenLineage export. (~2 engineer-days.)
+      manifest / OpenLineage export. Adds `/api/project/config`,
+      `/api/project/readme`, `/api/project/git` (best-effort with
+      graceful fallback when git is absent), `/api/manifest/openlineage`
+      (static RunEvent shape per model). Vendored markdown-it for
+      README rendering. DAG search fades non-matches by name / tag /
+      description; Esc clears.
 - [ ] **M3 — P1 diagnostics + seeds + reliability**: diagnostics
       bucket panel, seeds tab with sentinels, per-model
       last-20-runs sparkline. (~1–2 engineer-days.)

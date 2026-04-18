@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Juncture — DAG</title>
+<title>Juncture &mdash; DAG</title>
 <link rel="stylesheet" href="/assets/app.css">
 <link rel="stylesheet" href="/assets/prism.min.css">
 </head>
@@ -17,12 +17,21 @@
   <nav class="tabs">
     <button data-view="dag" class="tab active">DAG</button>
     <button data-view="runs" class="tab">Runs</button>
+    <button data-view="project" class="tab">Project</button>
   </nav>
 </header>
 
 <main>
   <section id="view-dag" class="view active">
     <aside class="sidebar">
+      <div class="dag-toolbar">
+        <input id="dag-search" type="search" placeholder="Search models (Esc to clear)" autocomplete="off">
+        <div class="dag-export">
+          <button id="dl-manifest" title="Download manifest.json">manifest</button>
+          <button id="dl-openlineage" title="Download manifest.openlineage.json">OL</button>
+        </div>
+      </div>
+
       <h2>Legend</h2>
       <ul class="legend">
         <li><span class="dot k-seed"></span>Seed (amber parallelogram)</li>
@@ -58,6 +67,10 @@
     </div>
     <div id="run-detail" class="detail-empty">Click a run on the left.</div>
   </section>
+
+  <section id="view-project" class="view">
+    <div id="project-pane"></div>
+  </section>
 </main>
 
 <footer>
@@ -68,6 +81,7 @@
 <script src="/assets/prism.min.js" data-manual></script>
 <script src="/assets/prism-sql.min.js"></script>
 <script src="/assets/prism-python.min.js"></script>
+<script src="/assets/markdown-it.min.js"></script>
 <script src="/assets/app.js"></script>
 </body>
 </html>

@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `feat/web-v2-readable` · **M1 (web UI v2) in flight**.
+> **Last updated:** 2026-04-18 · branch `feat/web-v2-overview` · **M2 (web UI v2) in flight**; M1 merged (#8).
 
 ## Point: co a proč děláme
 
@@ -141,8 +141,8 @@ druhý.
 
 | Milník | Branch | Stav |
 |---|---|---|
-| M1 — P0 "readable" | `feat/web-v2-readable` | **v letu** — source viewer + kind/status split + clickable Runs drawer + tests panel |
-| M2 — P1 overview + search + export | `feat/web-v2-overview` | pending |
+| M1 — P0 "readable" | `feat/web-v2-readable` | **merged (#8)** — source viewer + kind/status split + clickable Runs drawer + tests panel |
+| M2 — P1 overview + search + export | `feat/web-v2-overview` | **v letu** — Project tab (juncture.yaml + README + git) + DAG search + manifest/OpenLineage download |
 | M3 — P1 diagnostics + seeds + reliability | `feat/web-v2-diagnostics` | pending |
 | M4 — P2 governance | `feat/web-v2-governance` + `feat/web-v2-compliance` | pending |
 
