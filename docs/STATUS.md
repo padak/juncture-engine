@@ -3,13 +3,13 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `feat/profiles-block` · **Profiles (`profiles:` block)** přidány — `--profile` / `JUNCTURE_PROFILE`, per-key merge na `vars` a `connections`. Odemyká dev/staging/prod split + kbagent-branch mapování bez úpravy SQL (viz [`CONFIGURATION.md`](CONFIGURATION.md#profiles-profiles-block), ROADMAP §1.6).
+> **Last updated:** 2026-04-18 · branch `main` · **Phase 1 gate closed + Phase 1.6 ergonomics wave + onboarding track shipped.** Mezi gate a Phase 2 doběhly: web UI v2 end-to-end (M1–M4 + sidebar polish, PR #8–#13), Jinja macros (#15), profiles (#18), tutorial + `examples/tutorial_shop/` (#16), CLI sub-app grouping (#14), README rewrite + screenshoty (#17 + follow-up docs commity). Další krok: **Phase 2 adapters** (Snowflake / BigQuery / JDBC) + real SAPI upload v Keboola wrapperu.
 
 ## Point: co a proč děláme
 
 Juncture je multi-backend SQL + Python transformační engine, který nahrazuje čtyři
 legacy Keboola komponenty jedním enginem (SQL + Python v jednom DAGu, lokálně přes
-DuckDB, v produkci přes SQLGlot translaci na Snowflake/BigQuery/Postgres). Motivaci
+DuckDB, v produkci přes SQLGlot translaci na Snowflake/BigQuery/JDBC). Motivaci
 a dlouhodobý cíl viz [`VISION.md`](VISION.md); sekvenci fází, jak to dodáváme,
 viz [`STRATEGY.md`](STRATEGY.md).
 
@@ -72,7 +72,7 @@ parquet seedy, EXECUTE materializaci a type inference.
   [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §9 operational checklist; čísla
   poputují do [`BENCHMARKS.md`](BENCHMARKS.md).
 
-## Current sprint: Post-pilot hardening **(P0+P1 hotovo)**
+## Sprint A+B — Post-pilot hardening *(P0+P1 hotovo, historické)*
 
 Z pilotu vypadlo devět konkrétních Juncture featur ve dvou sprintech (A a B).
 Priority jsou z [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8:
@@ -115,20 +115,48 @@ kromě P3 race fixu (neblokuje gate):
       [`BENCHMARKS.md`](BENCHMARKS.md) (7 scénářů: monolith cold/warm,
       parallel EXECUTE, split DAG cold + threads 1/4/8).
 
-Další Phase 1 přídavky:
+## Phase 1.6 ergonomics & onboarding — shipped
 
-- **Balík 0 — EU e-commerce demo projekt** (`examples/eu_ecommerce/`):
-  16 modelů (13 SQL + 3 Python), 57 data tests, deterministický data
-  generator ve třech škálách. Nahrazuje Slevomat jako primární E2E
-  showcase a mapuje 1:1 na [`VISION.md`](VISION.md) 10 problémů
-  (ephemeral macro ekvivalent, parametrizované segmenty, mix SQL +
-  Python v jednom DAGu).
-- **Balík 2 — model disable toggle** (`disabled: true` v schema.yml +
-  CLI `--disable` / `--enable-only`). Nová `status=disabled`
-  hodnota, downstream dostává `skipped_reason=upstream_disabled`, run
-  se nefailuje.
+Po zavření gate dopadly featury, které Phase 1 nedefinovala, ale dávají
+Juncture ruku pro reálné použití — mix engine polishe, UX knobu a
+onboardingu:
 
-**Můžeme začít Phase 2 (Snowflake/BigQuery/Postgres adaptéry).**
+- **EU e-commerce demo projekt** (`examples/eu_ecommerce/`): 16 modelů
+  (13 SQL + 3 Python), 57 data tests, deterministický data generator
+  ve třech škálách. Primární E2E showcase; mapuje 1:1 na
+  [`VISION.md`](VISION.md) 10 problémů.
+- **Model disable toggle** — `disabled: true` v `schema.yml` + CLI
+  `--disable` / `--enable-only`. `status=disabled` + downstream
+  `skipped_reason=upstream_disabled`, run se nefailuje.
+- **Jinja macros** (`macros/**/*.sql`, PR #15) — dbt-style global
+  loader. Když `jinja: true`, každý `{% macro %}` je automaticky
+  Jinja global ve všech modelech bez `{% import %}`. Odemyká
+  "define a rule once, use everywhere" (VISION §Problem 2).
+- **Profiles (`profiles:` block)** (PR #18) — pojmenované overlays nad
+  `juncture.yaml` pro dev/staging/prod split. `--profile` /
+  `JUNCTURE_PROFILE` / top-level `profile:` precedence. Per-key merge
+  na `vars` a `connections.<name>`, wholesale replace na skalárech.
+  Odemyká kbagent-branch per-schema mapování.
+- **CLI subcommand grouping** (PR #14) — `sql` / `migrate` / `debug`
+  sub-apps nad core `init / compile / run / test / docs / web`.
+  Stabilnější top-level surface; `juncture translate` → `juncture sql
+  translate`, `juncture diagnostics` → `juncture debug diagnostics` atd.
+- **Onboarding tutorial** (PR #16) — [`docs/TUTORIAL.md`](TUTORIAL.md)
+  čtyřúrovňový walkthrough (L1 zero → L2 Python v DAGu → L3 macros +
+  ephemeral → L4 external `--var`) + funkční L4 projekt v
+  `examples/tutorial_shop/`. `make examples` ho pouští s `--var`
+  overridem, tedy nárok L4 je continuously verified.
+- **Bug fix:** `--var` CLI flag ovlivňoval jen Python `ctx.vars()`;
+  SQL Jinja se renderovalo s juncture.yaml defaults. `Project.load`
+  teď přijímá `run_vars` → konzistentní precedence napříč SQL + Python
+  (chycené při psaní tutorial L4).
+- **README rewrite** (PR #17 + docs-only commity) z pohledu nového
+  usera: hero + Runs screenshots, honest "What ships today" catalog,
+  "Development plan" sjednocený Phase 2 + Phase 4 seznam, etymologie
+  názvu jako mnemotechnika pitch bodů.
+
+**Můžeme začít Phase 2 (Snowflake/BigQuery/JDBC adaptéry + real SAPI
+upload v Keboola wrapperu).**
 
 ## Paralelní track: Web UI v2
 
@@ -175,7 +203,7 @@ druhý.
 Záměrně odložené až za Phase 1 gate (mirroring [`STRATEGY.md`](STRATEGY.md)
 Phase 2 a dál):
 
-- Snowflake / BigQuery / Postgres adaptéry (Phase 2 — až po web renderu).
+- Snowflake / BigQuery / JDBC adaptéry (Phase 2 — až po web renderu).
 - Produkce Keboola component wrapperu — real SAPI upload, branch mapping,
   OpenLineage napojení (Phase 2).
 - MCP server jako shipping produkt (Phase 3) — skeleton už existuje

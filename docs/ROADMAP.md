@@ -34,7 +34,8 @@ for the phase goal and done-done criterion.
       skip-on-upstream-failure.
 - [x] Test runner with `not_null`, `unique`, `relationships`,
       `accepted_values`.
-- [x] CLI: `init`, `compile`, `run`, `test`, `docs`, `translate`.
+- [x] CLI: `init`, `compile`, `run`, `test`, `docs`, `web` + `sql`
+      / `migrate` / `debug` subcommand groups.
 - [x] Examples: `simple` (4 SQL models) and `ecommerce`
       (5 SQL + 1 Python).
 - [x] Apache 2.0, Python 3.11+, zero required network access.
@@ -225,7 +226,7 @@ adapter work — neither blocks the other.
 ## Phase 2 — Production backends + Keboola component
 
 Goal: the same project runs locally on DuckDB and in production on
-Snowflake / BigQuery / Postgres, and is deployable as a Keboola
+Snowflake / BigQuery / JDBC, and is deployable as a Keboola
 component. See
 [`STRATEGY.md`](STRATEGY.md#phase-2--production-backends--keboola-component)
 for the phase goal and done-done criterion.
@@ -237,7 +238,9 @@ for the phase goal and done-done criterion.
       `MERGE INTO` incrementals by `unique_key`, `CLUSTER BY`.
 - [ ] BigQuery adapter: partitioning, clustering, external tables from
       GCS.
-- [ ] Postgres adapter: DDL + `ON CONFLICT` for incrementals.
+- [ ] JDBC adapter: connect via a JDBC driver URL, generic DDL,
+      dialect-appropriate incrementals (`MERGE` / `ON CONFLICT` /
+      staged insert) depending on the underlying database.
 
 ### 2.2 Cross-dialect guarantees
 
