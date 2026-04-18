@@ -490,9 +490,65 @@ def migrate_sync_pull(
         help="Source SQL dialect (snowflake, bigquery, redshift...); use 'duckdb' to skip translation.",
     ),
     target_dialect: str = typer.Option("duckdb", "--target-dialect"),
+    validate: bool = typer.Option(
+        False,
+        "--validate",
+        help="Pre-flight check only: parse every statement and resolve seed paths, "
+        "but don't write any project files. Exit code 1 if parse errors or missing seeds.",
+    ),
 ) -> None:
     """Convert a kbagent sync-pull transformation directory into a Juncture project."""
-    from juncture.migration import migrate_keboola_sync_pull
+    from juncture.migration import migrate_keboola_sync_pull, validate_sync_pull_migration
+
+    if validate:
+        report = validate_sync_pull_migration(
+            transformation_dir=source,
+            seeds_source=seeds,
+            source_dialect=source_dialect,
+            target_dialect=target_dialect,
+        )
+        table = Table(title=f"Validation — {report.transformation_name}")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_row("SQL lines", f"{report.sql_line_count:,}")
+        table.add_row("Statements", str(report.statement_count))
+        parse_style = "red" if report.parse_errors else "green"
+        table.add_row("Parse errors", f"[{parse_style}]{len(report.parse_errors)}[/]")
+        table.add_row("Input seeds expected", str(len(report.input_seeds_expected)))
+        missing_style = "red" if report.seeds_missing else "green"
+        table.add_row("Missing seeds", f"[{missing_style}]{len(report.seeds_missing)}[/]")
+        table.add_row("Output tables", str(len(report.output_tables)))
+        console.print(table)
+
+        if report.parse_errors:
+            console.print("\n[bold red]First 5 parse errors:[/]")
+            for idx, msg in report.parse_errors[:5]:
+                console.print(f"  [dim]#{idx}[/] {msg.splitlines()[0][:150]}")
+            if len(report.parse_errors) > 5:
+                console.print(f"  [dim]... +{len(report.parse_errors) - 5} more[/]")
+
+        if report.seeds_missing:
+            console.print("\n[bold red]Missing seeds:[/]")
+            for dest in report.seeds_missing[:10]:
+                expected = report.input_seeds_expected.get(dest, "?")
+                console.print(f"  [dim]{dest}[/] (source: {expected})")
+            if len(report.seeds_missing) > 10:
+                console.print(f"  [dim]... +{len(report.seeds_missing) - 10} more[/]")
+
+        ok = not report.parse_errors and not report.seeds_missing
+        console.print(
+            Panel(
+                "[green]Validation passed — ready to migrate.[/]"
+                if ok
+                else "[yellow]Validation found issues. Fix them or accept partial migration "
+                "(see `--continue-on-error` once migrated).[/]",
+                title="migrate-sync-pull --validate",
+                border_style="green" if ok else "yellow",
+            )
+        )
+        if not ok:
+            raise typer.Exit(code=1)
+        return
 
     result = migrate_keboola_sync_pull(
         transformation_dir=source,

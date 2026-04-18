@@ -33,9 +33,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import sqlglot
 import yaml
 
-from juncture.parsers.sqlglot_parser import translate_sql
+from juncture.parsers.sqlglot_parser import split_statements, translate_sql
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,27 @@ class SyncPullMigrationResult:
     seeds_linked: int
     seeds_missing: list[str]
     sql_translated: bool
+
+
+@dataclass(kw_only=True)
+class SyncPullValidationReport:
+    """Read-only pre-flight report for a sync-pull transformation.
+
+    Produced by :func:`validate_sync_pull_migration`. Everything the
+    migrator would report plus statement-level parse diagnostics, so an
+    operator can see before writing any files whether the migration is
+    going to have 7 primary errors or 70.
+    """
+
+    transformation_name: str
+    source_dialect: str
+    target_dialect: str
+    sql_line_count: int
+    statement_count: int
+    parse_errors: list[tuple[int, str]]  # (statement_index, error message)
+    output_tables: dict[str, str]
+    input_seeds_expected: dict[str, str]  # {destination: source}
+    seeds_missing: list[str]
 
 
 def migrate_keboola_sync_pull(
@@ -142,6 +164,95 @@ def migrate_keboola_sync_pull(
         seeds_missing=missing,
         sql_translated=sql_translated,
     )
+
+
+def validate_sync_pull_migration(
+    transformation_dir: str | Path,
+    *,
+    seeds_source: str | Path,
+    source_dialect: str = "snowflake",
+    target_dialect: str = "duckdb",
+) -> SyncPullValidationReport:
+    """Pre-flight validation of a sync-pull transformation, no files written.
+
+    Does the same inspection :func:`migrate_keboola_sync_pull` would do —
+    parse ``_config.yml``, try to parse every ``transform.sql`` statement
+    through SQLGlot in ``source_dialect``, and resolve each input mapping
+    against ``seeds_source`` — but stops short of writing a project. The
+    returned :class:`SyncPullValidationReport` is the signal an operator
+    uses to decide whether the migration is ready to land: ``parse_errors``
+    near zero means SQLGlot can translate everything; a non-empty
+    ``seeds_missing`` means the parquet pool is incomplete.
+
+    Cost is proportional to ``transform.sql`` size — a full-body parse
+    plus N ``sqlglot.parse_one`` calls, no DuckDB, no disk writes.
+    """
+    tx_dir = Path(transformation_dir).resolve()
+    seeds_src = Path(seeds_source).resolve()
+    config_path = tx_dir / "_config.yml"
+    sql_path = tx_dir / "transform.sql"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Expected {config_path} (sync-pull layout)")
+    if not sql_path.exists():
+        raise FileNotFoundError(f"Expected {sql_path} next to {config_path.name}")
+
+    cfg = yaml.safe_load(config_path.read_text()) or {}
+    tx_name = _slug(cfg.get("name") or tx_dir.name)
+    raw_sql = sql_path.read_text()
+
+    statements = split_statements(raw_sql)
+    parse_errors: list[tuple[int, str]] = []
+    for idx, stmt in enumerate(statements):
+        stripped = stmt.strip()
+        if not stripped:
+            continue
+        try:
+            sqlglot.parse_one(stripped, read=source_dialect)
+        except sqlglot.errors.ParseError as exc:
+            parse_errors.append((idx, str(exc)))
+
+    # Input mappings: {destination: source}. Same shape as _link_seeds
+    # resolves, but we stop at "would this seed exist" — no filesystem
+    # mutations.
+    input_seeds_expected: dict[str, str] = {}
+    seeds_missing: list[str] = []
+    for table in cfg.get("input", {}).get("tables", []) or []:
+        dest = table.get("destination") or table.get("source")
+        source = table.get("source") or ""
+        if not dest:
+            continue
+        input_seeds_expected[dest] = source
+        if not _sync_pull_source_exists(seeds_src, source):
+            seeds_missing.append(dest)
+
+    output_tables = _collect_output_tables(cfg)
+
+    return SyncPullValidationReport(
+        transformation_name=tx_name,
+        source_dialect=source_dialect,
+        target_dialect=target_dialect,
+        sql_line_count=raw_sql.count("\n") + 1,
+        statement_count=len(statements),
+        parse_errors=parse_errors,
+        output_tables=output_tables,
+        input_seeds_expected=input_seeds_expected,
+        seeds_missing=seeds_missing,
+    )
+
+
+def _sync_pull_source_exists(seeds_src: Path, source: str) -> bool:
+    """Return True when ``source`` resolves to an existing parquet directory.
+
+    Matches the path logic :func:`_link_seeds` uses for real migration:
+    ``<seeds_src>/<source>/`` (dots in ``source`` become directory
+    separators) with at least one ``.parquet`` file inside.
+    """
+    if not source:
+        return False
+    candidate = seeds_src / source.replace(".", "/")
+    if not candidate.is_dir():
+        return False
+    return any(candidate.glob("*.parquet"))
 
 
 def _slug(raw: str) -> str:
