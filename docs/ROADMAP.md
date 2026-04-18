@@ -148,6 +148,11 @@ migration from ~26 repair rounds to 2–3.
       overrides. Disabled models report `status=disabled`; downstream
       gets `status=skipped` with `skipped_reason=upstream_disabled`.
       Does not fail the run. Exposed in `compile --json` manifest.
+- [x] **Jinja macros under `macros/`** — dbt-style global macro loader.
+      When `jinja: true`, every `{% macro %}` under `macros/**/*.sql`
+      is auto-registered as a Jinja global so models call
+      `{{ my_date(col) }}` without `{% import %}`. Powers the "define
+      a rule once, use everywhere" story (VISION §Problem 2).
 - [ ] Advanced selectors: `path:marts/`, `state:modified+`.
 - [ ] Model unit tests (input → expected output in YAML).
 - [ ] Structured JSON logging mode for ingestion.
