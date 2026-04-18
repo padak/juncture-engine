@@ -31,6 +31,9 @@ Supporting docs:
   post-pilot hardening sprints (A/B).
 - [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — performance numbers
   (≤ 10 % overhead target).
+- [`docs/rfcs/`](docs/rfcs/) — design proposals that cross multiple
+  files or change public surface. `0001-web-ui-v2.md` is the current
+  one.
 
 Before touching any area, skim the relevant doc; don't duplicate its
 content in code comments or commit messages.
