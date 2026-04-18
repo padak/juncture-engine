@@ -432,6 +432,7 @@ class Project:
             cluster_by=schema_meta.get("cluster_by"),
             schedule_cron=schema_meta.get("schedule_cron"),
             config=schema_meta.get("config", {}),
+            disabled=bool(schema_meta.get("disabled", False)),
         )
 
     def _load_python_models(self, path: Path) -> list[Model]:
@@ -473,6 +474,7 @@ class Project:
                     unique_key=meta["unique_key"] or schema_meta.get("unique_key"),
                     schedule_cron=meta["schedule_cron"] or schema_meta.get("schedule_cron"),
                     config=meta["config"] | schema_meta.get("config", {}),
+                    disabled=bool(schema_meta.get("disabled", False)),
                 )
             )
         return models

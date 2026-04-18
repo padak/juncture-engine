@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `feat/phase-1-hardening` · commit `72abadd`.
+> **Last updated:** 2026-04-18 · branch `feat/phase-1-disable` · disable toggle landed.
 
 ## Point: co a proč děláme
 

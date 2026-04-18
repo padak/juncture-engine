@@ -448,7 +448,32 @@ expected to hold dialect oddities SQLGlot can't fully normalise, and
 refusing the whole body over one is a worse bargain than losing one
 statement's type-fixes.
 
-### 3.14 EXECUTE continue-on-error
+### 3.14 Model disable toggle
+
+Authors can opt a model out of execution by adding ``disabled: true``
+to its ``schema.yml`` entry. Runtime overrides: ``juncture run
+--disable a,b`` adds names to the disabled set; ``--enable-only
+x,y,z`` inverts (everything not listed becomes disabled).
+
+Executor semantics:
+
+- A disabled model yields ``ModelRun.status = "disabled"`` (new value
+  alongside ``success`` / ``failed`` / ``skipped`` / ``partial``).
+- Downstream models get ``status = "skipped"`` with
+  ``skipped_reason = "upstream_disabled"`` — distinct from
+  ``upstream_failure`` so the UI / manifest can render them as
+  intentional opt-outs, not errors.
+- ``ExecutionResult.ok`` stays true: disabled is not a failure, and
+  ``fail_fast`` does not fire. ``ExecutionResult.disabled`` counts
+  the disabled runs for reporting.
+- The ``compile --json`` manifest emits ``"disabled": bool`` per
+  model so external tools (the web UI) can render dimmed nodes.
+
+This closes the static case of VISION #6 ("no conditional
+execution"). Full cron-driven conditional execution (``schedule_cron``
+actually honoured rather than just metadata) is Phase 4 scope.
+
+### 3.15 EXECUTE continue-on-error
 
 ``duckdb_adapter._execute_raw`` honours ``model.config.continue_on_error``.
 When true, per-statement failures are appended to

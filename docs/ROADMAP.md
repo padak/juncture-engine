@@ -141,8 +141,13 @@ migration from ~26 repair rounds to 2–3.
 - [ ] **P3** — intra-script parallel EXECUTE race fix (currently
       forces `parallelism: 1` on migrated bodies).
 
-### 1.6 Ergonomic gaps (still open)
+### 1.6 Ergonomic gaps
 
+- [x] **Model disable toggle** — `disabled: true` in `schema.yml` +
+      `juncture run --disable a,b` / `--enable-only x,y` runtime
+      overrides. Disabled models report `status=disabled`; downstream
+      gets `status=skipped` with `skipped_reason=upstream_disabled`.
+      Does not fail the run. Exposed in `compile --json` manifest.
 - [ ] Advanced selectors: `path:marts/`, `state:modified+`.
 - [ ] Model unit tests (input → expected output in YAML).
 - [ ] Structured JSON logging mode for ingestion.

@@ -67,6 +67,17 @@ class RunRequest:
     reuse_seeds: bool = False
     parallelism_override: int | None = None
     continue_on_error: bool = False
+    #: CLI-level ``--disable model_a,model_b`` override — flips
+    #: ``Model.disabled`` to True for these names at runtime without
+    #: touching ``schema.yml``. Distinct from ``exclude`` because the
+    #: disabled model and its downstream are surfaced in the report
+    #: (``status=disabled`` / ``skipped+upstream_disabled``) rather
+    #: than silently omitted.
+    disable_models: list[str] = field(default_factory=list)
+    #: ``--enable-only a,b,c`` — inverse of ``--disable``. Everything
+    #: not listed becomes ``disabled=True``. Scoped to the DAG the
+    #: selectors pruned to.
+    enable_only: list[str] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -130,6 +141,11 @@ class Runner:
 
         _apply_parallelism_override(project.models, request.parallelism_override)
         _apply_continue_on_error(project.models, request.continue_on_error)
+        _apply_disable_overrides(
+            project.models,
+            disable=request.disable_models,
+            enable_only=request.enable_only,
+        )
 
         schema = project.config.default_schema
         with adapter:
@@ -266,6 +282,38 @@ def _apply_parallelism_override(models: list[Model], override: int | None) -> No
     for model in models:
         if model.materialization is Materialization.EXECUTE:
             model.config["parallelism"] = override
+
+
+def _apply_disable_overrides(
+    models: list[Model],
+    *,
+    disable: list[str],
+    enable_only: list[str] | None,
+) -> None:
+    """Flip ``Model.disabled`` on the listed names in place.
+
+    ``disable`` adds to the set of disabled models (additive on top of
+    ``schema.yml`` ``disabled: true`` declarations). ``enable_only``, if
+    non-empty, is the inverse: every model *not* in the list becomes
+    disabled, regardless of its ``schema.yml`` setting. Combining both
+    is supported — ``enable_only`` runs first, then ``disable`` can
+    remove more from the survivors.
+    """
+    by_name = {m.name: m for m in models}
+    if enable_only is not None:
+        allowed = set(enable_only)
+        unknown = allowed - set(by_name)
+        if unknown:
+            raise ValueError(f"--enable-only names not in project: {sorted(unknown)}")
+        for model in models:
+            if model.name not in allowed:
+                model.disabled = True
+    if disable:
+        unknown_disable = set(disable) - set(by_name)
+        if unknown_disable:
+            raise ValueError(f"--disable names not in project: {sorted(unknown_disable)}")
+        for name in disable:
+            by_name[name].disabled = True
 
 
 def _apply_continue_on_error(models: list[Model], enabled: bool) -> None:
