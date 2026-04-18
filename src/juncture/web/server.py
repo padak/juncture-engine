@@ -61,20 +61,30 @@ log = logging.getLogger(__name__)
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
-def build_app(project_path: Path, *, host: str, port: int) -> ThreadingHTTPServer:
+def build_app(project_path: Path, *, host: str, port: int, profile: str | None = None) -> ThreadingHTTPServer:
     """Factory wiring ``project_path`` into a threading HTTP server.
 
     The project is reloaded on every request so schema.yml / model
     edits surface without restarting — the cost is a few ms per
     request on a 300-model project, which we happily eat for DX.
+
+    ``profile`` pins the active profile from ``juncture.yaml``'s
+    ``profiles:`` block for the lifetime of the web session; all
+    payload builders pass it to :meth:`Project.load`.
     """
-    handler_cls = _make_handler(project_path)
+    handler_cls = _make_handler(project_path, profile=profile)
     return ThreadingHTTPServer((host, port), handler_cls)
 
 
-def serve(project_path: Path, *, host: str = "127.0.0.1", port: int = 8765) -> None:
+def serve(
+    project_path: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    profile: str | None = None,
+) -> None:
     """Blocking ``serve_forever`` loop; used by ``juncture web``."""
-    server = build_app(project_path.resolve(), host=host, port=port)
+    server = build_app(project_path.resolve(), host=host, port=port, profile=profile)
     log.info("juncture web: serving %s on http://%s:%s", project_path, host, port)
     try:
         server.serve_forever()
@@ -84,13 +94,14 @@ def serve(project_path: Path, *, host: str = "127.0.0.1", port: int = 8765) -> N
         server.server_close()
 
 
-def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
-    """Return a handler class closed over ``project_path``.
+def _make_handler(project_path: Path, *, profile: str | None = None) -> type[BaseHTTPRequestHandler]:
+    """Return a handler class closed over ``project_path`` (+ optional profile).
 
     ``http.server`` constructs handlers per-request, so we close the
     path into the class body rather than passing it through the
     constructor.
     """
+    active_profile = profile
 
     class JunctureHandler(BaseHTTPRequestHandler):
         # Override the noisy default access log; route it to our logger.
@@ -163,7 +174,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
 
         # --- Payload builders ---------------------------------------------
         def _project_payload(self) -> dict[str, Any]:
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             return {
                 "name": project.config.name,
                 "version": project.config.version,
@@ -174,7 +185,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             }
 
         def _manifest_payload(self) -> dict[str, Any]:
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             dag = project.dag()
             # Precompute PII set so the UI can propagate a ring from seed to descendants.
             pii_seeds = {s.name for s in project.seeds if s.pii}
@@ -232,7 +243,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             should show these verbatim — resolving them would leak env-var
             values into the browser, which we never want).
             """
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             yaml_path = project.root / "juncture.yaml"
             try:
                 raw_text = yaml_path.read_text()
@@ -254,7 +265,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             Case-insensitive filename match (README.md / readme.md) so the
             endpoint works across case-preserving filesystems.
             """
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             for candidate in ("README.md", "readme.md", "Readme.md"):
                 target = project.root / candidate
                 if target.is_file():
@@ -269,7 +280,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             Important for the Keboola Docker wrapper (RFC §12 q.2),
             where ``git`` is intentionally absent.
             """
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             try:
                 commit = subprocess.run(
                     ["git", "-C", str(project.root), "log", "-1", "--pretty=%H%n%s%n%an%n%ae%n%aI"],
@@ -301,7 +312,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             }
 
         def _model_detail_payload(self, name: str) -> dict[str, Any]:
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             model = next((m for m in project.models if m.name == name), None)
             if model is None:
                 raise FileNotFoundError(name)
@@ -479,7 +490,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             """
             from datetime import UTC, datetime
 
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             entries = read_runs(project_path)
             now = datetime.now(UTC)
             latest = entries[0] if entries else None
@@ -539,7 +550,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             """Portfolio-wide reliability dashboard (RFC §5.3 P2.6)."""
             from datetime import UTC, datetime, timedelta
 
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             entries = read_runs(project_path)
             now = datetime.now(UTC)
             windows = {"7d": 7, "30d": 30}
@@ -590,7 +601,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
 
         def _model_contract_payload(self, name: str) -> dict[str, Any]:
             """Per-model contract view: columns x tests + downstream blast radius."""
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             model = next((m for m in project.models if m.name == name), None)
             if model is None:
                 raise FileNotFoundError(name)
@@ -617,7 +628,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             Source of truth (first hit wins): ``docs:`` in schema.yml →
             ``<model_name>.md`` next to the SQL file → no docs.
             """
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             model = next((m for m in project.models if m.name == name), None)
             if model is None:
                 raise FileNotFoundError(name)
@@ -653,7 +664,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             The output is one JSON document so copy-paste into a
             ChatGPT / Claude context window or a RAG index is frictionless.
             """
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             dag = project.dag()
             manifest = self._manifest_payload()
 
@@ -704,7 +715,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
             when run with the sentinel-detection flag; if the file is
             missing the sentinels field is an empty dict.
             """
-            project = Project.load(project_path)
+            project = Project.load(project_path, profile=active_profile)
             schemas = project.seed_schemas()
             sentinels_path = project.root / ".juncture" / "seed_sentinels.json"
             sentinels: dict[str, dict[str, Any]] = {}

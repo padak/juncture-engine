@@ -69,6 +69,106 @@ connections:
     path: ${JUNCTURE_DB_PATH:-data/local.duckdb}
 ```
 
+## Profiles (`profiles:` block)
+
+*Landed in v0.1.9.* A profile is a named overlay that selectively
+overrides top-level keys so one `juncture.yaml` can describe several
+environments (local DuckDB, a shared staging Snowflake, production).
+The overlay is resolved once during `ProjectConfig.from_file()`, so
+every downstream component (runner, web UI, MCP, Keboola wrapper) sees
+the merged shape — no component needs to know profiles exist.
+
+```yaml
+name: my_shop
+profile: dev             # default profile when --profile not given
+default_schema: main
+
+connections:
+  warehouse:             # one logical connection, swapped by env
+    type: duckdb
+    path: data/base.duckdb
+
+vars:
+  as_of: "2026-03-31"
+  lookback_days: 90
+
+profiles:
+  dev:
+    default_schema: dev_petr
+    connections:
+      warehouse:
+        path: data/dev.duckdb
+    vars:
+      lookback_days: 7              # faster iterations locally
+
+  staging:
+    default_schema: "dev_${KEBOOLA_BRANCH_ID}"
+    connections:
+      warehouse:
+        type: snowflake
+        account: "${SNOW_ACCOUNT}"
+        database: STAGING_DB
+    vars:
+      lookback_days: 30
+
+  prod:
+    default_schema: analytics
+    connections:
+      warehouse:
+        type: snowflake
+        account: "${SNOW_ACCOUNT}"
+        database: PROD_DB
+```
+
+### Merge semantics
+
+- `vars:` — shallow dict merge. Profile keys override top-level keys;
+  unmentioned top-level keys survive.
+- `connections.<name>:` — per-connection shallow merge. A profile can
+  override just `path` (staying on DuckDB) or swap `type` wholesale
+  (DuckDB → Snowflake). Params from the top-level connection that the
+  profile didn't touch are preserved.
+- Scalars (`default_schema`, `default_materialization`, `models_path`,
+  `tests_path`, `macros_path`, `seeds_path`, `jinja`, `model_defaults`)
+  — profile replaces the top-level value wholesale.
+- Env-var interpolation (`${VAR}` / `${VAR:-fallback}`) runs **before**
+  the overlay, so `${KEBOOLA_BRANCH_ID}` inside a profile works the
+  same as at the top level.
+
+### Selecting a profile
+
+Resolution priority (highest first):
+
+1. CLI flag: `juncture run --profile prod`
+2. Env var: `JUNCTURE_PROFILE=prod juncture run`
+3. Top-level `profile:` field in `juncture.yaml`.
+4. None (no overlay applied). Backward-compat path: projects without a
+   `profiles:` block keep the legacy meaning of `profile:` (connection
+   name) and are never touched by the overlay.
+
+A requested profile name that doesn't exist under `profiles:` aborts
+the run with `ProjectError` — no silent fallback. Available profile
+names are exposed as `ProjectConfig.available_profiles` and the active
+one as `ProjectConfig.active_profile`.
+
+### kbagent / Keboola branches
+
+When working against a Keboola project through `kbagent`, map each
+branch to its own schema by exporting the branch ID kbagent set
+(`KEBOOLA_BRANCH_ID`) and referencing it in a profile:
+
+```bash
+kbagent branch use my-feature --project MY_PROJECT
+# KEBOOLA_BRANCH_ID is now exported
+juncture run --profile staging
+```
+
+The `staging` profile above uses `default_schema: "dev_${KEBOOLA_BRANCH_ID}"`,
+so each branch gets its own Snowflake schema without editing `juncture.yaml`.
+The Phase 2 Snowflake adapter (`ROADMAP.md §2.1`) closes this loop for
+production workloads; in Phase 1 you can already exercise the pattern
+locally with multiple DuckDB files.
+
 ## `.env` example
 
 Put this into a file called `.env` next to your `juncture.yaml`. Don't

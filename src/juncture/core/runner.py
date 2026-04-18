@@ -83,6 +83,10 @@ class RunRequest:
     #: not listed becomes ``disabled=True``. Scoped to the DAG the
     #: selectors pruned to.
     enable_only: list[str] | None = None
+    #: Active profile (``profiles:`` block in ``juncture.yaml``). When
+    #: ``None``, :class:`ProjectConfig` resolves the name from
+    #: ``JUNCTURE_PROFILE`` env var or the top-level ``profile:`` field.
+    profile: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -137,7 +141,11 @@ class Runner:
     """Execute a Juncture project end-to-end."""
 
     def run(self, request: RunRequest) -> RunReport:
-        project = Project.load(request.project_path, run_vars=request.run_vars)
+        project = Project.load(
+            request.project_path,
+            run_vars=request.run_vars,
+            profile=request.profile,
+        )
         adapter = self._build_adapter(project, request.connection)
 
         dag = project.dag()
@@ -200,7 +208,11 @@ class Runner:
         It only matters for SQLGlot's parse choices, and even then we fall
         back to regex detection for statements the parser rejects.
         """
-        project = Project.load(request.project_path, run_vars=request.run_vars)
+        project = Project.load(
+            request.project_path,
+            run_vars=request.run_vars,
+            profile=request.profile,
+        )
 
         dag = project.dag()
         if request.select or request.exclude:
@@ -262,14 +274,58 @@ class Runner:
         )
 
     def _build_adapter(self, project: Project, connection: str | None) -> Adapter:
-        conn_name = connection or project.config.profile or "default"
-        if conn_name not in project.config.connections:
-            raise ProjectError(
-                f"Connection {conn_name!r} not configured; available: {sorted(project.config.connections)}"
-            )
+        conn_name = self._resolve_connection_name(project, connection)
         conn_cfg = project.config.connections[conn_name]
         params = _resolve_paths(conn_cfg.params, root=project.root)
         return get_adapter(conn_cfg.type, **params)
+
+    @staticmethod
+    def _resolve_connection_name(project: Project, connection: str | None) -> str:
+        """Pick a connection from :attr:`ProjectConfig.connections`.
+
+        Historically ``profile:`` in ``juncture.yaml`` doubled as the
+        name of the connection to use — ``profile: local`` + ``connections:
+        {local: {...}}``. With the new ``profiles:`` overlay block the
+        same key now means "which overlay to apply", so we can no
+        longer read it as a connection name.
+
+        Resolution order:
+
+        1. Explicit ``--connection`` / ``RunRequest.connection`` wins.
+        2. Legacy path (no ``profiles:`` block in the project): fall back
+           to the old behaviour — top-level ``profile:`` field as
+           connection name.
+        3. Single-connection shortcut: if only one connection is
+           declared, pick it. Common case once profiles take over the
+           ``profile:`` field.
+        4. Otherwise fail fast so the user must pass ``--connection``.
+        """
+        connections = project.config.connections
+        if connection:
+            if connection not in connections:
+                raise ProjectError(
+                    f"Connection {connection!r} not configured; available: {sorted(connections)}"
+                )
+            return connection
+
+        if not project.config.available_profiles:
+            # Legacy backward-compat: pre-profiles projects used
+            # ``profile:`` as a connection name.
+            conn_name = project.config.profile or "default"
+            if conn_name not in connections:
+                raise ProjectError(
+                    f"Connection {conn_name!r} not configured; available: {sorted(connections)}"
+                )
+            return conn_name
+
+        if len(connections) == 1:
+            return next(iter(connections))
+
+        raise ProjectError(
+            "Project has a 'profiles:' block with multiple connections "
+            f"({sorted(connections)}). Pass --connection explicitly, "
+            "or leave a single connection in juncture.yaml."
+        )
 
     def _apply_selectors(self, dag: DAG, select: list[str], exclude: list[str]) -> DAG:
         selected = set(dag.nodes) if not select else dag.select(select)

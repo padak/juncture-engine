@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `main` · **Web UI v2 (RFC 0001) shipped end-to-end** — M1-M4 merged (#8-#12) + sidebar polish (#13).
+> **Last updated:** 2026-04-18 · branch `feat/profiles-block` · **Profiles (`profiles:` block)** přidány — `--profile` / `JUNCTURE_PROFILE`, per-key merge na `vars` a `connections`. Odemyká dev/staging/prod split + kbagent-branch mapování bez úpravy SQL (viz [`CONFIGURATION.md`](CONFIGURATION.md#profiles-profiles-block), ROADMAP §1.6).
 
 ## Point: co a proč děláme
 

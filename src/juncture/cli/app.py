@@ -137,9 +137,15 @@ def compile(
         "--dot",
         help="Write the DAG as a Graphviz DOT file. Render with `dot -Tsvg <file> > <file>.svg`.",
     ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Profile name from juncture.yaml 'profiles:' block. "
+        "Overrides JUNCTURE_PROFILE env var and the top-level 'profile:' field.",
+    ),
 ) -> None:
     """Parse the project, build the DAG, and show what will run."""
-    project_obj = Project.load(project)
+    project_obj = Project.load(project, profile=profile)
     dag = project_obj.dag()
     if output_json:
         payload = {
@@ -259,6 +265,12 @@ def run(
         "--enable-only",
         help="Inverse of --disable: disable every model not in this list.",
     ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Profile name from juncture.yaml 'profiles:' block. "
+        "Overrides JUNCTURE_PROFILE env var and the top-level 'profile:' field.",
+    ),
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
@@ -278,6 +290,7 @@ def run(
         continue_on_error=continue_on_error,
         disable_models=disable_flat,
         enable_only=enable_only_flat if enable_only_flat else None,
+        profile=profile,
     )
     if dry_run:
         plan = Runner().plan(request)
@@ -408,6 +421,11 @@ def test(
     select: list[str] = typer.Option([], "--select", "-s"),
     connection: str | None = typer.Option(None, "--connection", "-c"),
     threads: int = typer.Option(4, "--threads", "-t"),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Profile name from juncture.yaml 'profiles:' block.",
+    ),
 ) -> None:
     """Run only the data tests (assumes models are already materialized)."""
     request = RunRequest(
@@ -416,6 +434,7 @@ def test(
         connection=connection,
         threads=threads,
         run_tests=True,
+        profile=profile,
     )
     report = Runner().run(request)
 
@@ -447,9 +466,14 @@ def test(
 def docs(
     project: Path = typer.Option(Path("."), "--project", "-p"),
     output: Path = typer.Option(Path("target/docs"), "--output", "-o"),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Profile name from juncture.yaml 'profiles:' block.",
+    ),
 ) -> None:
     """Emit a minimal docs JSON (lineage + columns). Full HTML docs later."""
-    project_obj = Project.load(project)
+    project_obj = Project.load(project, profile=profile)
     dag = project_obj.dag()
     output.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -482,6 +506,12 @@ def web(
     project: Path = typer.Option(Path("."), "--project", "-p", help="Project directory."),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
     port: int = typer.Option(8765, "--port", help="Bind port."),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Profile name from juncture.yaml 'profiles:' block. "
+        "Pins the active profile for this web session.",
+    ),
 ) -> None:
     """Serve the DAG + run history via a local HTTP server.
 
@@ -506,7 +536,7 @@ def web(
             border_style="green",
         )
     )
-    serve(project_path, host=host, port=port)
+    serve(project_path, host=host, port=port, profile=profile)
 
 
 # ---------------------------------------------------------------------------
