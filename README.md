@@ -53,6 +53,32 @@ juncture run --project examples/tutorial_shop \
   --var as_of=2026-01-20 --var lookback_days=7
 ```
 
+### Or: let Claude drive
+
+This repo ships a **Claude Agent Skill** at
+[`.claude/skills/juncture/`](.claude/skills/juncture/) — a structured
+knowledge pack that teaches any Claude session every Juncture mechanic:
+project shape, all five materializations, the migration repair loop
+(`continue-on-error → diagnostics → sanitize`), profile-based
+dev/staging/prod, the full `juncture.yaml` + `schema.yml` reference,
+and a troubleshooting recipe book. Auto-loads in Claude Code whenever
+you work inside this repo.
+
+```bash
+# Use Juncture from any directory on your machine:
+cp -r .claude/skills/juncture ~/.claude/skills/
+```
+
+Then ask Claude things like:
+
+- *"Scaffold a Juncture project for an e-commerce shop with daily revenue and cohort retention."*
+- *"I have a Snowflake transformation in `kbagent sync pull` format. Migrate it to DuckDB and fix the EXECUTE errors."*
+- *"Add a `prod` profile that targets Snowflake while keeping `dev` on local DuckDB."*
+
+Progressive disclosure under the hood — lean `SKILL.md` (170 lines) as
+a navigation hub plus five references the agent loads only when the
+task touches them. No giant prompt dump in your context window.
+
 ## Build your own project
 
 Open [`docs/TUTORIAL.md`](docs/TUTORIAL.md). Four levels, each adds one
@@ -145,7 +171,9 @@ markdown-it. Tabs:
 ### Agent surface
 
 - **Claude Agent Skill** ships in
-  [`skills/juncture/SKILL.md`](skills/juncture/SKILL.md).
+  [`.claude/skills/juncture/`](.claude/skills/juncture/) — `SKILL.md`
+  navigation hub plus `references/` (lifecycle, yaml-schema, migration,
+  troubleshooting, materializations) loaded on demand.
 - **Stable JSON CLI**: `juncture compile --json`, `juncture run
   --json`, structured manifest with DAG + columns + tests.
 - **MCP server** skeleton under `juncture.mcp.server` (not yet shipping
