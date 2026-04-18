@@ -1,0 +1,28 @@
+name: tutorial_shop
+version: 0.1.0
+profile: local
+
+default_materialization: table
+default_schema: main
+
+# Jinja mode unlocks macros/ loading and {{ var('key') }} in SQL.
+jinja: true
+
+# External parameters. Every key here can be overridden at runtime via:
+#   juncture run --var lookback_days=7 --var as_of=2026-03-01
+# A Python model reads these via ctx.vars(); a SQL model via {{ var('key') }}.
+vars:
+  # Rolling window end. Override when you want a back-fill:
+  #   juncture run --var as_of=2026-02-01
+  as_of: "2026-03-31"
+  # Cut-off for the daily-revenue mart. Smaller = less data, faster dev loop.
+  lookback_days: 90
+  # Who counts as VIP. The macro is_vip() reads this; change in one place
+  # and every downstream mart flips together.
+  vip_threshold_eur: 500
+
+connections:
+  local:
+    type: duckdb
+    path: data/tutorial_shop.duckdb
+    threads: 2

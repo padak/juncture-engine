@@ -137,7 +137,7 @@ class Runner:
     """Execute a Juncture project end-to-end."""
 
     def run(self, request: RunRequest) -> RunReport:
-        project = Project.load(request.project_path)
+        project = Project.load(request.project_path, run_vars=request.run_vars)
         adapter = self._build_adapter(project, request.connection)
 
         dag = project.dag()
@@ -200,7 +200,7 @@ class Runner:
         It only matters for SQLGlot's parse choices, and even then we fall
         back to regex detection for statements the parser rejects.
         """
-        project = Project.load(request.project_path)
+        project = Project.load(request.project_path, run_vars=request.run_vars)
 
         dag = project.dag()
         if request.select or request.exclude:

@@ -1,0 +1,9 @@
+customer_id,email,country,signed_up_at
+101,alice@example.com,CZ,2025-11-10
+102,bob@example.com,DE,2025-12-02
+103,charlie@example.com,FR,2025-12-20
+104,dana@example.com,NL,2026-01-03
+105,erik@example.com,CZ,2026-01-12
+106,fatima@example.com,DE,2026-02-01
+107,george@example.com,FR,2026-02-25
+108,hannah@example.com,NL,2026-03-15

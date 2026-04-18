@@ -19,12 +19,17 @@ The four canonical docs split cleanly by question:
   — detailed task list grouped by the phases from STRATEGY.md.
 
 Supporting docs:
+- [`docs/TUTORIAL.md`](docs/TUTORIAL.md) — four-level onboarding
+  walkthrough (L1 zero to first SELECT, L2 Python in the DAG,
+  L3 macros + ephemeral, L4 external `--var` parameters). Companion
+  project: [`examples/tutorial_shop/`](examples/tutorial_shop/).
 - [`docs/DESIGN.md`](docs/DESIGN.md) — architecture (Project, DAG,
   Adapter, Executor, Testing, Seeds, Migration).
 - [`docs/RESEARCH.md`](docs/RESEARCH.md) — competitive landscape and
   why current tools (dbt, SQLMesh, Dagster, …) fall short.
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — `juncture.yaml`,
-  env vars, `schema.yml`, seed type overrides, parallel EXECUTE config.
+  env vars, `schema.yml`, seed type overrides, parallel EXECUTE config,
+  Jinja macros.
 - [`docs/MIGRATION_TIPS.md`](docs/MIGRATION_TIPS.md) — Snowflake→DuckDB
   cross-dialect migration field notes; taxonomy of 20+ type-coercion
   failure patterns plus a repair-loop blueprint. Source of the Phase 1
@@ -231,6 +236,7 @@ docs, because both humans and agents rely on them to plan.
 |---|---|---|
 | `docs/STATUS.md` | Living "where we are right now" snapshot (**Czech**, per user preference). Phases done / in flight / blocked. | Any time a phase starts or finishes, a blocker is hit/resolved, or a commit lands that shifts the story. Bump the `Last updated` line + branch + commit hash at the top. |
 | `docs/ROADMAP.md` | Phased plan `v0.1 → v2`. Uses `[x]` / `[ ]` checkboxes per deliverable. | When a feature lands: flip the box to `[x]` in the same commit. When scope changes: move items between versions, never silently delete. |
+| `docs/TUTORIAL.md` | Four-level onboarding narrative for a new user (zero → first SELECT → Python-in-DAG → shared macros/ephemeral → CLI `--var` params). Mirrors `examples/tutorial_shop/` as the reference project. | When a new Level N feature (new idiom worth teaching) lands, or when the scaffold command / `ref()` / `@transform` ergonomics change. Don't add new levels for marginal features — Levels should each unlock a distinct mental model. |
 | `docs/DESIGN.md` | Source of truth for architecture (components, adapter contract, materialization strategies, error model). | When a new component, materialization, or cross-cutting concern is added. Don't let `DESIGN.md` lag behind the code — if a reader of `DESIGN.md` would build a wrong mental model, it's broken. |
 | `docs/CONFIGURATION.md` | User-facing reference for `juncture.yaml`, `.env`, `schema.yml`, selectors, seeds layout. | When a new config key, connection field, seed layout, or selector syntax is added. |
 | `docs/BENCHMARKS.md` | Performance numbers + how they were measured. | When a benchmark script changes or a new measured number is available. Don't delete old numbers — add a dated row. |

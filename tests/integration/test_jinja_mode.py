@@ -94,6 +94,46 @@ connections:
     assert rows == [(1, False), (2, True)]
 
 
+def test_cli_var_flows_into_sql_jinja(tmp_path: Path) -> None:
+    """A --var override must reach SQL Jinja rendering, not just Python ctx.vars."""
+    project = tmp_path / "varproj"
+    (project / "models").mkdir(parents=True)
+    (project / "juncture.yaml").write_text(
+        f"""name: varproj
+profile: local
+default_schema: main
+jinja: true
+vars:
+  threshold: 100
+connections:
+  local:
+    type: duckdb
+    path: {project}/v.duckdb
+"""
+    )
+    (project / "models" / "stg.sql").write_text(
+        "SELECT 1 AS id, 50 AS amount UNION ALL SELECT 2, 200 UNION ALL SELECT 3, 500"
+    )
+    (project / "models" / "big.sql").write_text(
+        "SELECT * FROM {{ ref('stg') }} WHERE amount >= {{ var('threshold') }}"
+    )
+
+    # Baseline with default threshold=100 -> rows with amount >= 100.
+    baseline = Runner().run(RunRequest(project_path=project))
+    assert baseline.ok
+    import duckdb
+
+    con = duckdb.connect(str(project / "v.duckdb"))
+    assert con.execute("SELECT COUNT(*) FROM main.big").fetchone()[0] == 2
+    con.close()
+
+    # Re-run with threshold=400 via run_vars -> should drop to 1 row.
+    override = Runner().run(RunRequest(project_path=project, run_vars={"threshold": 400}))
+    assert override.ok
+    con = duckdb.connect(str(project / "v.duckdb"))
+    assert con.execute("SELECT COUNT(*) FROM main.big").fetchone()[0] == 1
+
+
 def test_jinja_macros_ignored_without_jinja_mode(tmp_path: Path) -> None:
     """If ``jinja: false`` the macros/ folder is silently skipped."""
     project = tmp_path / "nojinja"
