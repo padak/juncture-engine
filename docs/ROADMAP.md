@@ -115,21 +115,24 @@ Pulled from [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8 "Concrete
 Juncture roadmap" priorities table. The goal is to collapse the next
 migration from ~26 repair rounds to 2–3.
 
-- [ ] **P0** — `juncture run --continue-on-error` on EXECUTE
+- [x] **P0** — `juncture run --continue-on-error` on EXECUTE
       materialization (`duckdb_adapter._execute_raw`); emit a
       `RunReport` with per-statement errors instead of a single
       `AdapterError`.
-- [ ] **P0** — schema-aware `translate_sql(schema=...)` via
+- [x] **P0** — schema-aware `translate_sql(schema=...)` via
       `sqlglot.optimizer.annotate_types`, plus new AST passes:
       `harmonize_binary_ops`, `harmonize_function_args`,
-      `fix_date_diff_signature`, `fix_timestamp_arithmetic`.
-- [ ] **P1** — sentinel detector in `type_inference`: emit per-column
-      sentinel profiles so `CAST(col AS INT)` expands to
-      `TRY_CAST(NULLIF(col, sentinel) AS BIGINT)` automatically.
-- [ ] **P1** — error classifier `juncture.diagnostics.classify_error`
-      (regex → bucket lookup powering both AI prompts and human
-      triage).
-- [ ] **P1** — `migrate-sync-pull --validate` pre-flight report.
+      `fix_timestamp_arithmetic`. (`fix_date_diff_signature` already
+      handled by SQLGlot's built-in DateDiff translation; re-added
+      as an AST pass only if a regression fires.)
+- [x] **P1** — sentinel detector in `type_inference`: per-column
+      sentinel profiles on `InferenceResult.sentinels` via
+      `detect_sentinels()` (downstream injection into `CAST`/`TRY_CAST`
+      wrappers is a next follow-up).
+- [x] **P1** — error classifier `juncture.diagnostics.classify_error`
+      + `juncture diagnostics` CLI: regex → bucket lookup powering
+      both AI prompts and human triage.
+- [x] **P1** — `migrate-sync-pull --validate` pre-flight report.
 - [ ] **P2** — statement-dependency DAG filter that separates primary
       errors from cascade errors, re-using `build_statement_dag`.
 - [ ] **P2** — `juncture repair --max-iterations N --agent-model

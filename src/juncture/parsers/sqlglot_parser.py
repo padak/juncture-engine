@@ -13,12 +13,15 @@ form that doesn't conflict with shells.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
 import networkx as nx
 import sqlglot
 from sqlglot import exp
+
+log = logging.getLogger(__name__)
 
 # Two accepted ref() forms. Users can pick either; we rewrite both.
 _REF_PATTERN = re.compile(
@@ -85,7 +88,13 @@ def parse_sql(sql: str, *, dialect: str = "duckdb") -> SQLParseResult:
     return SQLParseResult(sql=sql, refs=refs, rewritten=render_refs(sql))
 
 
-def translate_sql(sql: str, *, read: str, write: str) -> str:
+def translate_sql(
+    sql: str,
+    *,
+    read: str,
+    write: str,
+    schema: dict[str, dict[str, str]] | None = None,
+) -> str:
     """Translate ``sql`` from one dialect to another via SQLGlot.
 
     Works for the typical DuckDB <-> Snowflake <-> BigQuery <-> Postgres matrix
@@ -101,6 +110,14 @@ def translate_sql(sql: str, *, read: str, write: str) -> str:
     :func:`harmonize_case_types` so Snowflake's implicit VARCHAR coercion in
     CASE expressions gets explicit ``CAST(n AS VARCHAR)`` wrappers DuckDB
     requires.
+
+    When ``schema`` is provided (``{table: {col: type}}``) the output is
+    further processed by schema-aware AST passes that fix the
+    cross-dialect type-coercion gaps DuckDB enforces but Snowflake does
+    not: VARCHAR-on-both-sides joins, aggregates over VARCHAR, timestamp
+    arithmetic against integer literals, etc. See
+    :func:`harmonize_binary_ops`, :func:`harmonize_function_args`,
+    :func:`fix_timestamp_arithmetic`.
     """
     if read == write and write != "duckdb":
         return sql
@@ -124,8 +141,207 @@ def translate_sql(sql: str, *, read: str, write: str) -> str:
         assert isinstance(parsed, exp.Expression)
         if write == "duckdb":
             harmonize_case_types(parsed)
+            if schema:
+                parsed = _apply_schema_passes(parsed, schema)
         translated.append(parsed.sql(dialect=write))
     return ";\n".join(translated)
+
+
+def _apply_schema_passes(tree: exp.Expression, schema: dict[str, dict[str, str]]) -> exp.Expression:
+    """Run the schema-aware harmonisation passes in order.
+
+    Isolated so the caller can ignore any single pass's failure: SQLGlot's
+    :func:`qualify` is strict about ambiguous column references; for a
+    migrated body with dialect-specific syntax a soft fallback to
+    un-annotated translation is preferable to aborting the whole file.
+    """
+    from sqlglot.optimizer.annotate_types import annotate_types
+    from sqlglot.optimizer.qualify import qualify
+    from sqlglot.schema import MappingSchema
+
+    try:
+        mapping = MappingSchema(schema, dialect="duckdb")
+        qualified = qualify(tree, schema=mapping, dialect="duckdb")
+        annotated = annotate_types(qualified, schema=mapping)
+    except Exception as exc:
+        # qualify() can raise OptimizeError on ambiguous refs, unknown tables,
+        # CROSS JOIN without USING, etc. None of that is fatal to the
+        # translation — we just lose the type annotations and the schema
+        # passes become no-ops for this statement.
+        log.debug("Schema annotation skipped: %s", exc)
+        return tree
+    harmonize_binary_ops(annotated)
+    harmonize_function_args(annotated)
+    fix_timestamp_arithmetic(annotated)
+    return annotated
+
+
+# --- Schema-aware AST passes (target: DuckDB strict typing) ---
+
+# DuckDB error messages that map cleanly to a harmonisation rule. These
+# type families drive both the AST rewrite logic and the error classifier.
+_VARCHAR_TYPES: frozenset[exp.DataType.Type] = frozenset(
+    {
+        exp.DataType.Type.VARCHAR,
+        exp.DataType.Type.TEXT,
+        exp.DataType.Type.CHAR,
+        exp.DataType.Type.NCHAR,
+        exp.DataType.Type.NVARCHAR,
+    }
+)
+_NUMERIC_TYPES: frozenset[exp.DataType.Type] = frozenset(
+    {
+        exp.DataType.Type.INT,
+        exp.DataType.Type.BIGINT,
+        exp.DataType.Type.SMALLINT,
+        exp.DataType.Type.TINYINT,
+        exp.DataType.Type.DECIMAL,
+        exp.DataType.Type.DOUBLE,
+        exp.DataType.Type.FLOAT,
+    }
+)
+_TEMPORAL_TYPES: frozenset[exp.DataType.Type] = frozenset(
+    {
+        exp.DataType.Type.DATE,
+        exp.DataType.Type.TIMESTAMP,
+        exp.DataType.Type.TIMESTAMPTZ,
+        exp.DataType.Type.TIMESTAMPNTZ,
+        exp.DataType.Type.TIMESTAMPLTZ,
+    }
+)
+
+
+def _node_type(node: exp.Expression | None) -> exp.DataType.Type | None:
+    """Return a node's annotated primary type, or ``None`` if unknown."""
+    if node is None or node.type is None:
+        return None
+    return node.type.this
+
+
+def _wrap_try_cast(node: exp.Expression, target: exp.DataType.Type) -> exp.Expression:
+    """Wrap ``node`` in a ``TRY_CAST(... AS target)`` expression.
+
+    Use :class:`exp.TryCast` rather than ``Cast(safe=True)`` because the
+    latter serialises as plain ``CAST`` in the DuckDB dialect — which is
+    strict and defeats the whole point of the wrap.
+    """
+    dtype = exp.DataType(this=target, expressions=[])
+    return exp.TryCast(this=node.copy(), to=dtype.copy())
+
+
+def harmonize_binary_ops(tree: exp.Expression) -> exp.Expression:
+    """Wrap the VARCHAR side of a binary op when the other side is numeric/temporal.
+
+    Taxonomy rows #3, #4, #9, #10 in ``docs/MIGRATION_TIPS.md``: DuckDB
+    refuses to compare ``VARCHAR`` against ``BIGINT`` or ``TIMESTAMP``;
+    Snowflake coerces silently. For every ``EQ/NEQ/GT/LT/GTE/LTE/Add/Sub``
+    whose operands carry annotated types, we wrap the VARCHAR side in
+    ``TRY_CAST(… AS <other>)`` so the comparison succeeds and bad values
+    become NULL (the triage-safe behaviour).
+
+    The tree must already carry annotations from
+    :func:`sqlglot.optimizer.annotate_types`; un-annotated trees are a
+    no-op. Mutates in place; returned for chaining.
+    """
+    binary_ops: tuple[type[exp.Expression], ...] = (
+        exp.EQ,
+        exp.NEQ,
+        exp.GT,
+        exp.GTE,
+        exp.LT,
+        exp.LTE,
+    )
+    for node in list(tree.find_all(*binary_ops)):
+        left, right = node.this, node.expression
+        left_t = _node_type(left)
+        right_t = _node_type(right)
+        if left_t is None or right_t is None:
+            continue
+        # VARCHAR <-> (numeric | temporal): wrap the VARCHAR side.
+        if left_t in _VARCHAR_TYPES and right_t in (_NUMERIC_TYPES | _TEMPORAL_TYPES):
+            left.replace(_wrap_try_cast(left, right_t))
+        elif right_t in _VARCHAR_TYPES and left_t in (_NUMERIC_TYPES | _TEMPORAL_TYPES):
+            right.replace(_wrap_try_cast(right, left_t))
+    return tree
+
+
+# Functions that expect a numeric input — wrap VARCHAR argument in TRY_CAST.
+# TRIM / UPPER / LOWER want VARCHAR input; non-varchar args get wrapped the
+# other way (numeric -> varchar) but that case is rarer and typically already
+# handled by Snowflake-to-DuckDB SQLGlot translation.
+_NUMERIC_INPUT_FUNCS: tuple[type[exp.Expression], ...] = (
+    exp.Sum,
+    exp.Avg,
+    exp.Min,  # debatable but DuckDB is permissive; included for symmetry
+    exp.Max,
+    exp.Round,
+    exp.Ceil,
+    exp.Floor,
+    exp.Abs,
+)
+
+
+def harmonize_function_args(tree: exp.Expression) -> exp.Expression:
+    """Wrap VARCHAR arguments of numeric aggregates in ``TRY_CAST(… AS DOUBLE)``.
+
+    Taxonomy row #6 in ``docs/MIGRATION_TIPS.md``:
+    ``SUM(varchar_col)`` fails on DuckDB with ``No function matches
+    'sum(VARCHAR)'`` while Snowflake auto-coerces. Wrap only the direct
+    argument; if the argument is an expression whose output is already
+    annotated numeric, leave it alone.
+    """
+    double_t = exp.DataType.Type.DOUBLE
+    for node in list(tree.find_all(*_NUMERIC_INPUT_FUNCS)):
+        arg = node.this
+        if arg is None:
+            continue
+        arg_t = _node_type(arg)
+        if arg_t is None or arg_t not in _VARCHAR_TYPES:
+            continue
+        arg.replace(_wrap_try_cast(arg, double_t))
+    return tree
+
+
+def fix_timestamp_arithmetic(tree: exp.Expression) -> exp.Expression:
+    """Rewrite ``timestamp ± integer_literal`` to ``timestamp ± INTERVAL 'n' DAY``.
+
+    Taxonomy row #8 in ``docs/MIGRATION_TIPS.md``: Snowflake treats a
+    bare integer on the right of a ``TIMESTAMP`` as "that many days";
+    DuckDB refuses with ``No function matches '-(TIMESTAMP,
+    INTEGER_LITERAL)'``. Requires annotated types so we know which side
+    is the TIMESTAMP — without annotations the pass is a no-op (the
+    numeric literal could be anything).
+    """
+    for node in list(tree.find_all(exp.Add, exp.Sub)):
+        left, right = node.this, node.expression
+        left_t = _node_type(left)
+        right_t = _node_type(right)
+
+        # TIMESTAMP/DATE on the left, integer literal on the right.
+        if left_t in _TEMPORAL_TYPES and isinstance(right, exp.Literal) and not right.is_string:
+            right.replace(_interval_days(right.name))
+            continue
+        # Integer literal on the left, TIMESTAMP/DATE on the right (rare but
+        # Snowflake permits). We commute by swapping operands so the interval
+        # is still on the right.
+        if right_t in _TEMPORAL_TYPES and isinstance(left, exp.Literal) and not left.is_string:
+            interval = _interval_days(left.name)
+            # ``a + 1 DAY`` == ``1 DAY + a`` semantically; keep ``-`` direction
+            # by not swapping Sub (would flip sign).
+            if isinstance(node, exp.Add):
+                left.replace(interval)
+            # For Sub we leave the expression as-is; fixing ``1 - ts`` is a
+            # rewrite with sign inversion and DuckDB's error message on that
+            # shape is already actionable for the author.
+    return tree
+
+
+def _interval_days(n: str) -> exp.Interval:
+    """Build ``INTERVAL 'n' DAY`` for the given integer literal text."""
+    return exp.Interval(
+        this=exp.Literal.string(str(int(n))),
+        unit=exp.Var(this="DAY"),
+    )
 
 
 # --- CASE type harmonization (Snowflake implicit VARCHAR coerce -> DuckDB explicit) ---

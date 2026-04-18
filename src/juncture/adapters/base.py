@@ -8,7 +8,7 @@ and translate SQL via SQLGlot before execution when needed.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -21,6 +21,23 @@ class AdapterError(Exception):
 
 
 @dataclass(frozen=True, kw_only=True)
+class StatementError:
+    """One failed statement captured by an EXECUTE continue-on-error run.
+
+    Produced by :class:`DuckDBAdapter` when ``model.config.continue_on_error``
+    is true: the adapter keeps running the remaining statements after a
+    failure, and collects each failure here instead of aborting the whole
+    body. Consumed by the diagnostics layer and by the web UI run-history
+    view.
+    """
+
+    index: int
+    sql: str
+    error: str
+    layer: int | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
 class MaterializationResult:
     """Summary of a materialized model run."""
 
@@ -30,6 +47,9 @@ class MaterializationResult:
     row_count: int | None
     elapsed_seconds: float
     warnings: list[str]
+    # Populated only by EXECUTE materialization under continue-on-error.
+    # Non-EXECUTE materializations and standard EXECUTE runs keep this empty.
+    statement_errors: list[StatementError] = field(default_factory=list)
 
 
 class Adapter(ABC):

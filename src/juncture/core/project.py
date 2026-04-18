@@ -186,6 +186,78 @@ class Project:
     def dag(self) -> DAG:
         return DAG.from_models(self.models)
 
+    def seed_schemas(self) -> dict[str, dict[str, str]]:
+        """Return ``{seed_name: {col: duckdb_type}}`` for schema-aware translation.
+
+        Used by :func:`juncture.parsers.sqlglot_parser.translate_sql` so
+        ``annotate_types`` can reason about column types when harmonising
+        cross-dialect SQL. Types come from two sources, in order:
+
+        1. ``seeds/schema.yml`` overrides — always authoritative.
+        2. Parquet file metadata (via a throwaway ``duckdb.connect(':memory:')``
+           + ``DESCRIBE read_parquet(...)``) — gives the raw per-column
+           type the file advertises (usually VARCHAR for Keboola exports;
+           occasionally DOUBLE / DATE / TIMESTAMP for upstream systems that
+           emit typed parquet).
+
+        CSV seeds contribute no entries: without loading the file we can't
+        know the shape. Users who need CSV seeds annotated should add an
+        explicit ``seeds/schema.yml`` block.
+
+        Intentionally cheap: opens an in-memory DuckDB per seed, runs
+        a single metadata query, closes. On a 200-seed project this
+        takes a couple of seconds and is cached in
+        ``.juncture/seed_schemas.json`` if already computed.
+        """
+        overrides_source = self._seed_schema_overrides()
+        cache_path = self.root / ".juncture" / "seed_schemas.json"
+        cached = _read_json(cache_path) if cache_path.exists() else {}
+        if isinstance(cached, dict):
+            cached_seeds = {name: cols for name, cols in cached.items() if isinstance(cols, dict)}
+        else:
+            cached_seeds = {}
+
+        result: dict[str, dict[str, str]] = {}
+        for seed in self.seeds:
+            overrides = overrides_source.get(seed.name, {})
+            # Start with cache, then parquet describe, then overrides
+            # (overrides win because users wrote them to fix bad inference).
+            cols = dict(cached_seeds.get(seed.name, {}))
+            if seed.format == "parquet" and not cols:
+                probed = _probe_parquet_columns(seed.path)
+                cols.update(probed)
+            cols.update(overrides)
+            if cols:
+                result[seed.name] = cols
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(cache_path, result)
+        return result
+
+    def _seed_schema_overrides(self) -> dict[str, dict[str, str]]:
+        """Parse the ``type`` column specs from ``seeds/schema.yml``.
+
+        The seed-overrides file is loaded during :meth:`_discover_seeds`
+        but we re-read here to surface types (``SeedSpec.schema_overrides``
+        stores the raw column list in Juncture's legacy shape).
+        """
+        schema_file = self.root / self.config.seeds_path / "schema.yml"
+        if not schema_file.exists():
+            return {}
+        data = yaml.safe_load(schema_file.read_text()) or {}
+        overrides: dict[str, dict[str, str]] = {}
+        for seed_decl in data.get("seeds", []) or []:
+            cols = seed_decl.get("columns", [])
+            if isinstance(cols, list):
+                # Modern schema.yml shape: list of {name, type} dicts.
+                overrides[seed_decl["name"]] = {
+                    c["name"]: c["type"] for c in cols if isinstance(c, dict) and "name" in c and "type" in c
+                }
+            elif isinstance(cols, dict):
+                # Legacy shape used by SeedSpec.schema_overrides: flat dict.
+                overrides[seed_decl["name"]] = {k: str(v) for k, v in cols.items()}
+        return overrides
+
     def _load_schemas(self) -> None:
         models_root = self.root / self.config.models_path
         if not models_root.exists():
@@ -404,6 +476,46 @@ class Project:
                 )
             )
         return models
+
+
+def _probe_parquet_columns(parquet_dir: Path) -> dict[str, str]:
+    """Run a throwaway DuckDB in-memory DESCRIBE to extract parquet column types.
+
+    Returns an empty dict on failure (missing duckdb, empty directory,
+    unreadable file). Callers must tolerate incomplete schemas — the
+    schema-aware translate pass degrades gracefully to un-annotated
+    behaviour when a seed's types aren't known.
+    """
+    try:
+        import duckdb
+    except ImportError:  # pragma: no cover — duckdb is a hard dep
+        return {}
+    glob = f"{parquet_dir.as_posix().rstrip('/')}/*.parquet"
+    con = duckdb.connect(":memory:", read_only=False)
+    try:
+        rows = con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('{glob}'))"
+        ).fetchall()
+    except Exception:
+        return {}
+    finally:
+        con.close()
+    return {str(name): str(type_).upper() for name, type_ in rows}
+
+
+def _read_json(path: Path) -> Any:
+    import json
+
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    import json
+
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def _load_dotenv_if_present(root: Path) -> None:

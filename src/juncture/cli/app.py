@@ -227,6 +227,13 @@ def run(
         help="Override config.parallelism on every EXECUTE model (for benchmarking "
         "without editing schema.yml). Default: respect per-model config.",
     ),
+    continue_on_error: bool = typer.Option(
+        False,
+        "--continue-on-error",
+        help="For EXECUTE materializations: keep running after a failing statement "
+        "and collect every primary error into the run report. Intended for migration "
+        "triage — pair with `juncture diagnostics` to classify the errors.",
+    ),
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
@@ -241,6 +248,7 @@ def run(
         run_vars=run_vars,
         reuse_seeds=reuse_seeds,
         parallelism_override=parallelism,
+        continue_on_error=continue_on_error,
     )
     if dry_run:
         plan = Runner().plan(request)
@@ -255,8 +263,14 @@ def run(
     table.add_column("Time (s)", justify="right")
     table.add_column("Error", overflow="fold")
 
+    status_colors = {
+        "success": "green",
+        "failed": "red",
+        "skipped": "yellow",
+        "partial": "yellow",
+    }
     for r in report.models.runs:
-        status_style = {"success": "green", "failed": "red", "skipped": "yellow"}[r.status]
+        status_style = status_colors.get(r.status, "white")
         rows = str(r.result.row_count) if r.result and r.result.row_count is not None else "—"
         error = r.error or ""
         table.add_row(
@@ -267,6 +281,23 @@ def run(
             error,
         )
     console.print(table)
+
+    # Per-statement errors from continue-on-error runs. Printed after the
+    # main results table so they don't crowd the overview. First three
+    # errors verbatim, plus a count of the rest — migration triage uses
+    # `juncture diagnostics` on the full list anyway.
+    for r in report.models.runs:
+        if not (r.result and r.result.statement_errors):
+            continue
+        errors = r.result.statement_errors
+        console.print(
+            f"\n[bold yellow]{r.model.name}[/] — {len(errors)} statement(s) failed (continue-on-error):"
+        )
+        for err in errors[:3]:
+            layer_tag = f" layer={err.layer}" if err.layer is not None else ""
+            console.print(f"  [dim]#{err.index}{layer_tag}[/] {err.error}")
+        if len(errors) > 3:
+            console.print(f"  [dim]... +{len(errors) - 3} more[/]")
 
     if report.tests:
         tt = Table(title="Data tests")
@@ -459,9 +490,65 @@ def migrate_sync_pull(
         help="Source SQL dialect (snowflake, bigquery, redshift...); use 'duckdb' to skip translation.",
     ),
     target_dialect: str = typer.Option("duckdb", "--target-dialect"),
+    validate: bool = typer.Option(
+        False,
+        "--validate",
+        help="Pre-flight check only: parse every statement and resolve seed paths, "
+        "but don't write any project files. Exit code 1 if parse errors or missing seeds.",
+    ),
 ) -> None:
     """Convert a kbagent sync-pull transformation directory into a Juncture project."""
-    from juncture.migration import migrate_keboola_sync_pull
+    from juncture.migration import migrate_keboola_sync_pull, validate_sync_pull_migration
+
+    if validate:
+        report = validate_sync_pull_migration(
+            transformation_dir=source,
+            seeds_source=seeds,
+            source_dialect=source_dialect,
+            target_dialect=target_dialect,
+        )
+        table = Table(title=f"Validation — {report.transformation_name}")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_row("SQL lines", f"{report.sql_line_count:,}")
+        table.add_row("Statements", str(report.statement_count))
+        parse_style = "red" if report.parse_errors else "green"
+        table.add_row("Parse errors", f"[{parse_style}]{len(report.parse_errors)}[/]")
+        table.add_row("Input seeds expected", str(len(report.input_seeds_expected)))
+        missing_style = "red" if report.seeds_missing else "green"
+        table.add_row("Missing seeds", f"[{missing_style}]{len(report.seeds_missing)}[/]")
+        table.add_row("Output tables", str(len(report.output_tables)))
+        console.print(table)
+
+        if report.parse_errors:
+            console.print("\n[bold red]First 5 parse errors:[/]")
+            for idx, msg in report.parse_errors[:5]:
+                console.print(f"  [dim]#{idx}[/] {msg.splitlines()[0][:150]}")
+            if len(report.parse_errors) > 5:
+                console.print(f"  [dim]... +{len(report.parse_errors) - 5} more[/]")
+
+        if report.seeds_missing:
+            console.print("\n[bold red]Missing seeds:[/]")
+            for dest in report.seeds_missing[:10]:
+                expected = report.input_seeds_expected.get(dest, "?")
+                console.print(f"  [dim]{dest}[/] (source: {expected})")
+            if len(report.seeds_missing) > 10:
+                console.print(f"  [dim]... +{len(report.seeds_missing) - 10} more[/]")
+
+        ok = not report.parse_errors and not report.seeds_missing
+        console.print(
+            Panel(
+                "[green]Validation passed — ready to migrate.[/]"
+                if ok
+                else "[yellow]Validation found issues. Fix them or accept partial migration "
+                "(see `--continue-on-error` once migrated).[/]",
+                title="migrate-sync-pull --validate",
+                border_style="green" if ok else "yellow",
+            )
+        )
+        if not ok:
+            raise typer.Exit(code=1)
+        return
 
     result = migrate_keboola_sync_pull(
         transformation_dir=source,
@@ -507,6 +594,12 @@ def sanitize(
         "--dry-run",
         help="Report which files would change without writing them.",
     ),
+    schema_aware: bool = typer.Option(
+        True,
+        "--schema-aware/--no-schema-aware",
+        help="Load seed schemas from the project and feed them into translate_sql "
+        "so VARCHAR/numeric/timestamp mismatches get TRY_CAST wrappers automatically.",
+    ),
 ) -> None:
     """Re-translate all ``models/*.sql`` files through ``translate_sql``.
 
@@ -514,11 +607,29 @@ def sanitize(
     SQL was copied verbatim and DuckDB chokes on dialect-specific constructs
     (implicit VARCHAR coercion in CASE, etc.). The same translator the migrator
     now runs by default is applied to every SQL model, statement by statement.
+
+    With ``--schema-aware`` (default) the seed schemas are read from the
+    project; ``translate_sql`` then uses them to resolve VARCHAR-on-typed
+    comparisons, aggregates over VARCHAR, and ``timestamp ± integer``
+    arithmetic into explicit ``TRY_CAST`` / ``INTERVAL`` forms.
     """
     models_dir = project / "models"
     if not models_dir.is_dir():
         console.print(f"[red]No models/ directory at {models_dir}[/]")
         raise typer.Exit(code=1)
+
+    schema: dict[str, dict[str, str]] | None = None
+    if schema_aware:
+        try:
+            project_obj = Project.load(project)
+            schema = project_obj.seed_schemas()
+        except Exception as exc:
+            # Missing juncture.yaml or unreadable seeds fall back to
+            # un-annotated sanitize — the user still gets dialect-level
+            # translation, just without type-coercion fixes.
+            console.print(f"[yellow]Schema-aware mode unavailable: {exc}[/]")
+            console.print("[dim]Falling back to syntax-only translation.[/]")
+            schema = None
 
     table = Table(title=f"Sanitize {source_dialect} -> {target_dialect}")
     table.add_column("Model")
@@ -530,7 +641,12 @@ def sanitize(
     total = 0
     for sql_file in sorted(models_dir.glob("*.sql")):
         original = sql_file.read_text()
-        translated = translate_sql(original, read=source_dialect, write=target_dialect)
+        translated = translate_sql(
+            original,
+            read=source_dialect,
+            write=target_dialect,
+            schema=schema,
+        )
         changed = translated != original
         total += 1
         if changed:
@@ -542,6 +658,8 @@ def sanitize(
 
     console.print(table)
     summary = f"{changed_count}/{total} model(s) updated"
+    if schema:
+        summary += f" (schema-aware, {len(schema)} seed(s) annotated)"
     if dry_run:
         summary += " (dry-run, nothing written)"
     console.print(Panel(summary, title="sanitize", border_style="green"))
@@ -663,6 +781,85 @@ def split_execute(
             border_style="green",
         )
     )
+
+
+@app.command()
+def diagnostics(
+    project: Path = typer.Option(Path("."), "--project", "-p"),
+    select: list[str] = typer.Option([], "--select", "-s"),
+    connection: str | None = typer.Option(None, "--connection", "-c"),
+    threads: int = typer.Option(4, "--threads", "-t"),
+    show_fixes: bool = typer.Option(
+        True,
+        "--show-fixes/--no-show-fixes",
+        help="Print the fix_hint template next to each error bucket.",
+    ),
+) -> None:
+    """Run the project with ``--continue-on-error`` and classify every error.
+
+    Migration triage shortcut: spawns the runner in continue-on-error
+    mode, collects per-statement errors from every EXECUTE model, feeds
+    them through :func:`juncture.diagnostics.classify_error`, and
+    prints a bucketised summary ("15 type_mismatch, 4 conversion, 2
+    missing_object"). Intended to be the first command run against a
+    freshly migrated body; once every bucket is down to a handful of
+    entries you switch back to a normal ``juncture run``.
+    """
+    from collections import Counter
+
+    from juncture.diagnostics import classify_statement_errors
+
+    request = RunRequest(
+        project_path=project.resolve(),
+        select=select,
+        connection=connection,
+        threads=threads,
+        continue_on_error=True,
+        run_tests=False,
+    )
+    report = Runner().run(request)
+
+    # Aggregate every statement_error across every model in this run.
+    all_errors: list[object] = []
+    for model_run in report.models.runs:
+        if model_run.result is None:
+            continue
+        all_errors.extend(model_run.result.statement_errors)
+
+    if not all_errors:
+        console.print(
+            Panel(
+                "[green]Clean run — no statement errors to classify.[/]",
+                title="juncture diagnostics",
+                border_style="green",
+            )
+        )
+        return
+
+    classifications = classify_statement_errors(all_errors)
+    by_bucket: Counter[str] = Counter(c.bucket.value for c in classifications)
+
+    summary = Table(title="Error buckets")
+    summary.add_column("Bucket")
+    summary.add_column("Count", justify="right")
+    for bucket, count in by_bucket.most_common():
+        summary.add_row(bucket, str(count))
+    console.print(summary)
+
+    if show_fixes:
+        console.print("\n[bold]Representative error per subcategory:[/]\n")
+        seen_subs: set[str] = set()
+        for c in classifications:
+            if c.subcategory in seen_subs:
+                continue
+            seen_subs.add(c.subcategory)
+            console.print(
+                f"[bold]{c.bucket.value}/{c.subcategory}[/]\n"
+                f"  error: {c.error_message.splitlines()[0][:150]}\n"
+                f"  fix:   [green]{c.fix_hint}[/]\n"
+            )
+
+    raise typer.Exit(code=0)
 
 
 if __name__ == "__main__":

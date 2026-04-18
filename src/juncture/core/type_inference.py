@@ -59,6 +59,23 @@ _PRECEDENCE: list[tuple[str, str]] = [
 
 
 @dataclass(kw_only=True)
+class SentinelProfile:
+    """Per-column summary of non-null string values that behave like NULL.
+
+    Populated by :func:`detect_sentinels` for VARCHAR parquet columns.
+    The intent is to feed the ``translate_sql`` layer so
+    ``CAST(col AS INT)`` auto-expands to
+    ``TRY_CAST(NULLIF(col, sentinel) AS BIGINT)`` when the column has
+    known sentinels — the repair that dominated the late iterations of
+    the pilot migration (docs/MIGRATION_TIPS.md §5.4).
+    """
+
+    null_sentinels: list[str] = field(default_factory=list)
+    #: ``{sentinel_value: fraction_of_non_null_rows}``.
+    abundance: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True)
 class InferenceResult:
     """Outcome of inferring types for one seed."""
 
@@ -66,6 +83,33 @@ class InferenceResult:
     native_types: dict[str, str] = field(default_factory=dict)
     rows_scanned: int = 0
     mode: str = "full"  # "full" | "sampled"
+    #: Populated when :func:`infer_parquet_types` is called with
+    #: ``detect_sentinels_also=True``. Empty for non-VARCHAR columns.
+    sentinels: dict[str, SentinelProfile] = field(default_factory=dict)
+
+
+# Default sentinel lexicon — matches Keboola exports and similar legacy
+# ETL. ``''`` first because empty strings are the most common NULL-carrier
+# and need to come before other rules (e.g. ``NULLIF(col, '')`` unblocks
+# CAST AS INT for BIGINT-shaped VARCHAR columns).
+_DEFAULT_SENTINELS: tuple[str, ...] = (
+    "",
+    "--empty--",
+    "n/a",
+    "N/A",
+    "NA",
+    "NULL",
+    "null",
+    "None",
+    "none",
+    "Other",
+    "unknown",
+)
+
+# A sentinel must appear in at least this fraction of non-null values to
+# count. Low enough to catch uncommon placeholders, high enough to ignore
+# legitimate data that happens to include the word "Other" once.
+_SENTINEL_THRESHOLD = 0.02
 
 
 def infer_parquet_types(
@@ -75,11 +119,21 @@ def infer_parquet_types(
     full_scan_threshold: int = 1_000_000,
     sample_size: int = 1_000_000,
     overrides: dict[str, str] | None = None,
+    detect_sentinels_also: bool = False,
+    sentinel_candidates: tuple[str, ...] = _DEFAULT_SENTINELS,
 ) -> InferenceResult:
     """Return ``{column: duckdb_type}`` for a parquet dataset.
 
     The cursor must belong to an active DuckDB connection; both reads and
     type checks run through it.
+
+    When ``detect_sentinels_also`` is true, every VARCHAR column also
+    gets a :class:`SentinelProfile` entry in
+    :attr:`InferenceResult.sentinels` listing placeholder values that
+    represent NULL (``''``, ``'--empty--'``, ``'n/a'``...). Downstream
+    ``translate_sql`` can inject ``NULLIF`` chains around CAST wrappers
+    so the pilot-migration repair pattern (docs/MIGRATION_TIPS.md §5.4)
+    happens automatically.
     """
     overrides = overrides or {}
     row_count = int(cursor.execute(f"SELECT COUNT(*) FROM read_parquet('{parquet_glob}')").fetchone()[0])
@@ -185,12 +239,85 @@ def infer_parquet_types(
     all_native = dict(typed_columns)
     for col in varchar_columns:
         all_native[col] = "VARCHAR"
+
+    sentinels: dict[str, SentinelProfile] = {}
+    if detect_sentinels_also and varchar_columns:
+        sentinels = detect_sentinels(cursor, source, varchar_columns, sentinel_candidates)
+
     return InferenceResult(
         column_types=types,
         native_types=all_native,
         rows_scanned=row_count,
         mode=mode,
+        sentinels=sentinels,
     )
+
+
+def detect_sentinels(
+    cursor: Any,
+    source: str,
+    varchar_columns: list[str],
+    sentinel_candidates: tuple[str, ...] = _DEFAULT_SENTINELS,
+    *,
+    threshold: float = _SENTINEL_THRESHOLD,
+) -> dict[str, SentinelProfile]:
+    """Return a per-column sentinel profile for the given VARCHAR columns.
+
+    Issues **one** aggregate query over ``source`` (typically the same
+    scan the type probe uses), counting occurrences of each candidate
+    per column. Columns where a sentinel exceeds the ``threshold``
+    fraction of non-null values get a :class:`SentinelProfile`;
+    columns with no sentinels are omitted from the returned dict.
+
+    ``source`` can be either ``read_parquet('...')`` or the sampling
+    CTE form used by :func:`infer_parquet_types` — both produce the
+    same per-column counts.
+    """
+    if not varchar_columns or not sentinel_candidates:
+        return {}
+
+    parts: list[str] = []
+    for col in varchar_columns:
+        quoted = f'"{col}"'
+        parts.append(f'SUM(CASE WHEN {quoted} IS NOT NULL THEN 1 ELSE 0 END) AS "{col}__nn"')
+        for i, sentinel in enumerate(sentinel_candidates):
+            parts.append(
+                f'SUM(CASE WHEN {quoted} = {_quote_sql_string(sentinel)} THEN 1 ELSE 0 END) AS "{col}__s{i}"'
+            )
+
+    probe_sql = f"SELECT {', '.join(parts)} FROM {source}"
+    row = cursor.execute(probe_sql).fetchone() or ()
+    sentinels: dict[str, SentinelProfile] = {}
+    idx = 0
+    for col in varchar_columns:
+        non_null = int(row[idx] or 0)
+        idx += 1
+        per_col_counts: dict[str, int] = {}
+        for sentinel in sentinel_candidates:
+            per_col_counts[sentinel] = int(row[idx] or 0)
+            idx += 1
+        if non_null <= 0:
+            continue
+        found: list[str] = []
+        abundance: dict[str, float] = {}
+        for sentinel, count in per_col_counts.items():
+            if count <= 0:
+                continue
+            fraction = count / non_null
+            if fraction >= threshold:
+                found.append(sentinel)
+                abundance[sentinel] = round(fraction, 4)
+        if found:
+            sentinels[col] = SentinelProfile(
+                null_sentinels=found,
+                abundance=abundance,
+            )
+    return sentinels
+
+
+def _quote_sql_string(s: str) -> str:
+    """Render ``s`` as a SQL string literal with inner single quotes escaped."""
+    return "'" + s.replace("'", "''") + "'"
 
 
 def build_typed_view_sql(

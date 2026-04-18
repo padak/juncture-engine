@@ -399,6 +399,67 @@ A future MCP server (`juncture-mcp`) will expose tools like
 `juncture.translate_sql` over the MCP protocol so any LLM host can drive
 Juncture directly.
 
+### 3.12 Diagnostics (`juncture.diagnostics`)
+
+Pure-function classifier that maps a DuckDB error string to an
+``ErrorClassification(bucket, subcategory, fix_hint, operands)``.
+Regex-driven, no adapter/Project dependency, so it can be called from
+any layer (CLI, web UI, agent prompts, MCP tools).
+
+Buckets are coarse: ``type_mismatch`` / ``function_signature`` /
+``conversion`` / ``missing_object`` / ``idempotence`` / ``parser`` /
+``other``. Subcategories are fine-grained (``sentinel_string_to_typed``,
+``comparison_type_mismatch``). ``fix_hint`` is a template string with
+named operand substitution so a repair agent or a human can apply the
+fix directly.
+
+Consumed by ``juncture diagnostics``, which runs the project with
+``--continue-on-error``, aggregates every ``StatementError`` across
+models, and prints a bucketised summary plus one representative error
+per subcategory. See ``docs/MIGRATION_TIPS.md`` §5.2 for the taxonomy
+the regex rules encode; add new patterns to
+``_RULES`` in ``classifier.py`` when a migration surfaces one.
+
+### 3.13 Schema-aware translate (``sqlglot_parser.translate_sql``)
+
+Takes an optional ``schema={table: {col: duckdb_type}}`` argument. When
+provided, the tree is first ``qualify()``-ed, then ``annotate_types()``
+populates per-node ``.type`` metadata. Three additional AST passes then
+rewrite the cross-dialect gaps DuckDB's strict typing surfaces:
+
+- ``harmonize_binary_ops`` wraps the VARCHAR side of a comparison in
+  ``TRY_CAST(... AS other)`` when the other side is numeric or
+  temporal (taxonomy rows #3, #4, #9, #10).
+- ``harmonize_function_args`` wraps a VARCHAR argument to SUM / AVG /
+  ROUND / etc. in ``TRY_CAST(... AS DOUBLE)`` (taxonomy row #6).
+- ``fix_timestamp_arithmetic`` rewrites ``ts ± integer_literal`` to
+  ``ts ± INTERVAL 'n' DAY`` (taxonomy row #8).
+
+Project supplies the schema via ``Project.seed_schemas()`` which
+combines ``seeds/schema.yml`` overrides with parquet DESCRIBE metadata
+(via a throwaway in-memory DuckDB). Result is cached in
+``.juncture/seed_schemas.json``.
+
+When ``qualify()`` raises (ambiguous refs, unknown tables, CROSS JOIN
+without USING) we fall back to un-annotated translation for that
+statement — the dialect translation still happens, just without the
+type-aware harmonisation. This is intentional: a migrated body is
+expected to hold dialect oddities SQLGlot can't fully normalise, and
+refusing the whole body over one is a worse bargain than losing one
+statement's type-fixes.
+
+### 3.14 EXECUTE continue-on-error
+
+``duckdb_adapter._execute_raw`` honours ``model.config.continue_on_error``.
+When true, per-statement failures are appended to
+``MaterializationResult.statement_errors`` (a list of ``StatementError``
+records with index, truncated SQL, error message, and layer for
+parallel mode) instead of aborting. The executor then downgrades the
+model's ``ModelRun.status`` from ``success`` to ``partial`` — distinct
+from ``failed`` so cascade-skip doesn't fire and ``RunReport.ok``
+stays true. Exposed via ``juncture run --continue-on-error`` and
+consumed by ``juncture diagnostics``.
+
 ## 7. Cross-cutting concerns
 
 ### Error model
@@ -406,6 +467,9 @@ Juncture directly.
 - `ProjectError` — bad config, missing files.
 - `DAGError` — cycle, duplicate name, missing ref.
 - `AdapterError` — backend-specific failures.
+- `StatementError` — individual statement failure inside an EXECUTE
+  body under continue-on-error (does not abort the model run;
+  collected into `MaterializationResult.statement_errors`).
 - `TestRunner` surfaces adapter exceptions as test failures with `error`.
 
 ### Logging
