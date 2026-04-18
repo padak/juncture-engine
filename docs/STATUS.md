@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `phase-3-slevomat-migration` · commit `b186606`.
+> **Last updated:** 2026-04-18 · branch `feat/phase-1-hardening` · commit `72abadd`.
 
 ## Point: co a proč děláme
 
@@ -72,35 +72,40 @@ parquet seedy, EXECUTE materializaci a type inference.
   [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §9 operational checklist; čísla
   poputují do [`BENCHMARKS.md`](BENCHMARKS.md).
 
-## Current sprint: Post-pilot hardening
+## Current sprint: Post-pilot hardening **(P0+P1 hotovo)**
 
 Z pilotu vypadlo devět konkrétních Juncture featur ve dvou sprintech (A a B).
 Priority jsou z [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8:
 
-| Priorita | Feature | Kde | Velikost |
+| Priorita | Feature | Kde | Status |
 |---|---|---|---|
-| **P0** | `juncture run --continue-on-error` na EXECUTE | `duckdb_adapter._execute_raw` | ~20 LOC |
-| **P0** | Schema-aware `translate_sql(schema=...)` — `annotate_types` + `harmonize_binary_ops` / `harmonize_function_args` | `sqlglot_parser.translate_sql` | ~200 LOC |
-| **P1** | Sentinel detector v `type_inference` | `core.type_inference.infer_parquet_types` | ~100 LOC |
-| **P1** | Error classifier (`juncture.diagnostics.classify_error`) | `juncture.diagnostics` (nový modul) | ~150 LOC |
-| **P1** | `migrate-sync-pull --validate` — pre-flight report | `cli/app.py` + runner dry-run | ~80 LOC |
-| **P2** | Statement dependency DAG filter na cascade errory | re-use `build_statement_dag` | ~50 LOC |
-| **P2** | `juncture repair --max-iterations N` orchestrátor | nový subcommand | ~300 LOC |
-| **P3** | Fix race condition intra-script paralelního EXECUTE (dnes nutí `parallelism: 1` na migrovaných bodies — blokuje jeden benchmark scénář) | `duckdb_adapter` | TBD |
+| **P0** | `juncture run --continue-on-error` na EXECUTE | `duckdb_adapter._execute_raw` | **done** (`bc572f6`) |
+| **P0** | Schema-aware `translate_sql(schema=...)` | `sqlglot_parser.translate_sql` | **done** (`edb07ab`) |
+| **P1** | Sentinel detector v `type_inference` | `core.type_inference.detect_sentinels` | **done** (`c31809d`) |
+| **P1** | Error classifier `juncture diagnostics` | `juncture.diagnostics` (nový modul) | **done** (`7f6a4be`) |
+| **P1** | `migrate-sync-pull --validate` | `migration.keboola_sync_pull` + CLI | **done** (`72abadd`) |
+| **P2** | Statement dependency DAG filter na cascade errory | re-use `build_statement_dag` | pending |
+| **P2** | `juncture repair --max-iterations N` orchestrátor | nový subcommand | pending |
+| **P3** | Fix race condition intra-script paralelního EXECUTE | `duckdb_adapter` | pending |
 
-## Phase 1 gate — still open
+**Výsledný efekt:** plán z [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §7
+("~70 % primárních chyb vymizí před prvním runem, dalších ~15 %
+sentinelů vymizí sampling pass, continue-on-error zkolapsuje repair
+loop ze seriálního na dávkový") je teď v kódu. Zbývá ho ověřit další
+migrací.
+
+## Phase 1 gate — almost closed
 
 Z [`STRATEGY.md`](STRATEGY.md) Phase 1 zbývají tyto unchecked deliverables,
 než půjdeme na Phase 2:
 
-- [ ] **Continue-on-error + diagnostics** (Sprint A z
+- [x] **Continue-on-error + diagnostics** (Sprint A z
       [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8 — P0/P1 výše).
-- [ ] **Schema-aware `translate_sql`** — feed `Project.seed_schemas()` do
-      SQLGlot `annotate_types`; `harmonize_binary_ops` vloží `TRY_CAST` kolem
+- [x] **Schema-aware `translate_sql`** — napojeno na `Project.seed_schemas()`
+      + SQLGlot `annotate_types`; `harmonize_binary_ops` vloží `TRY_CAST` kolem
       VARCHAR operandů (Sprint B).
-- [ ] **Sentinel detector** v `type_inference` — per-column sentinel profily →
-      `CAST(col AS INT)` se expanduje na
-      `TRY_CAST(NULLIF(col, sentinel) AS BIGINT)` automaticky.
+- [x] **Sentinel detector** v `type_inference` — per-column sentinel profily
+      (downstream injection do `CAST`/`TRY_CAST` wrapperů je follow-up).
 - [ ] **Intra-script parallel EXECUTE race fix** (P3 výše).
 - [ ] **Web render** — malý Python HTTP server (`juncture docs --serve` nebo
       ekvivalent) renderuje compiled DAG, per-model schema a run history
@@ -108,6 +113,13 @@ než půjdeme na Phase 2:
 - [x] Pilot-migration benchmark čísla zaznamenaná v
       [`BENCHMARKS.md`](BENCHMARKS.md) (7 scénářů: monolith cold/warm,
       parallel EXECUTE, split DAG cold + threads 1/4/8).
+
+Navíc příjde **Balík 0: EU e-commerce demo projekt** (`examples/eu_ecommerce/`)
+— 16 modelů (13 SQL + 3 Python), 57 data tests, deterministický data
+generator ve třech škálách. Nahrazuje Slevomat jako primární E2E showcase
+a mapuje 1:1 na [`VISION.md`](VISION.md) 10 problémů (ephemeral macro
+ekvivalent, parametrizované segmenty, mix SQL + Python v jednom DAGu).
+Hotové na branchi `feat/phase-1-demo-ecommerce`.
 
 ## Risks / open questions
 
