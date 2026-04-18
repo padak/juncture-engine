@@ -57,6 +57,30 @@ at this pain.
 
 Takeaway: dbt's mental model is right; its implementation layer is aging.
 
+**dbt compatibility — explicit decision (2026-04-18)**
+
+*Partial compatibility: yes. Full Jinja compatibility: rejected.*
+
+`{{ ref('model') }}` already works. `{{ config(materialized=...) }}` is a
+cheap addition worth doing for migration UX. That is the correct scope.
+
+Full Jinja + macro compatibility is not worth pursuing:
+1. The Jinja surface is enormous — hundreds of adapter-specific macros, dbt
+   packages (dbt_utils, dbt-expectations) depend on Jinja runtime internals,
+   not just SQL.
+2. Jinja is the core of dbt's weakness, not its strength. Inheriting it would
+   mean inheriting the problem.
+3. dbt Labs is rewriting dbt-core in Rust ("dbt Fusion") — the current Jinja
+   API will break regardless.
+4. The primary Juncture user (Keboola customer migrating off legacy
+   components) is not a heavy dbt user. Migration path from dbt matters less
+   than migration path from raw Snowflake SQL.
+
+The right framing is **migration path from dbt**, not compatibility with it.
+A future `juncture migrate-dbt <project>` command that reads `dbt_project.yml`
+and copies `.sql` models would serve 80 % of dbt users who want to switch,
+without requiring Jinja runtime support.
+
 ## 2. SQLMesh (Tobiko Data)
 
 **What makes it interesting**
@@ -224,6 +248,10 @@ industry blogs:
    without human hand-holding (subject to granted permissions).
 7. **OpenLineage events on every run** (post-MVP) so the Keboola lineage
    story works out of the box.
+8. **No full dbt Jinja compatibility.** `ref()` macro support yes; full Jinja
+   + dbt packages no. The right surface is a one-way migration tool
+   (`migrate-dbt`) that reads `dbt_project.yml` and produces a Juncture
+   project. See §1 for the full rationale.
 
 ## Things we intentionally do *not* do in MVP
 
