@@ -804,6 +804,38 @@ def split_execute(
 
 
 @app.command()
+def web(
+    project: Path = typer.Option(Path("."), "--project", "-p", help="Project directory."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
+    port: int = typer.Option(8765, "--port", help="Bind port."),
+) -> None:
+    """Serve the DAG + run history via a local HTTP server.
+
+    Read-only single-page UI: DAG visualisation (cytoscape.js) plus
+    run history. Reads ``<project>/target/run_history.jsonl`` for
+    the history view — populated every time ``juncture run`` finishes.
+
+    Binds to 127.0.0.1 by default. Ctrl-C stops.
+    """
+    from juncture.web.server import serve
+
+    project_path = project.resolve()
+    if not (project_path / "juncture.yaml").exists():
+        console.print(f"[red]No juncture.yaml at {project_path}[/]")
+        raise typer.Exit(code=1)
+    console.print(
+        Panel(
+            f"[green]Serving[/] {project_path.name}\n"
+            f"Open [bold]http://{host}:{port}[/] in your browser.\n"
+            f"[dim]Ctrl-C to stop.[/]",
+            title="juncture web",
+            border_style="green",
+        )
+    )
+    serve(project_path, host=host, port=port)
+
+
+@app.command()
 def diagnostics(
     project: Path = typer.Option(Path("."), "--project", "-p"),
     select: list[str] = typer.Option([], "--select", "-s"),

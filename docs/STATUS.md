@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `feat/phase-1-disable` · disable toggle landed.
+> **Last updated:** 2026-04-18 · branch `feat/phase-1-web-render` · **Phase 1 gate closed**.
 
 ## Point: co a proč děláme
 
@@ -94,10 +94,10 @@ sentinelů vymizí sampling pass, continue-on-error zkolapsuje repair
 loop ze seriálního na dávkový") je teď v kódu. Zbývá ho ověřit další
 migrací.
 
-## Phase 1 gate — almost closed
+## Phase 1 gate — CLOSED
 
-Z [`STRATEGY.md`](STRATEGY.md) Phase 1 zbývají tyto unchecked deliverables,
-než půjdeme na Phase 2:
+Z [`STRATEGY.md`](STRATEGY.md) Phase 1 máme ve stavu **hotovo** vše
+kromě P3 race fixu (neblokuje gate):
 
 - [x] **Continue-on-error + diagnostics** (Sprint A z
       [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8 — P0/P1 výše).
@@ -106,20 +106,29 @@ než půjdeme na Phase 2:
       VARCHAR operandů (Sprint B).
 - [x] **Sentinel detector** v `type_inference` — per-column sentinel profily
       (downstream injection do `CAST`/`TRY_CAST` wrapperů je follow-up).
-- [ ] **Intra-script parallel EXECUTE race fix** (P3 výše).
-- [ ] **Web render** — malý Python HTTP server (`juncture docs --serve` nebo
-      ekvivalent) renderuje compiled DAG, per-model schema a run history
-      z manifestu. **Závazná brána Phase 1 → Phase 2.** V kódu zatím není.
+- [ ] **Intra-script parallel EXECUTE race fix** (P3 — pending, neblokuje
+      gate, nutí `parallelism: 1` na migrovaných bodies).
+- [x] **Web render** — `juncture web --project <p>` startuje stdlib
+      `http.server` + cytoscape.js DAG + run-history z
+      `target/run_history.jsonl`. Vendored JS, žádný build, žádné extras.
 - [x] Pilot-migration benchmark čísla zaznamenaná v
       [`BENCHMARKS.md`](BENCHMARKS.md) (7 scénářů: monolith cold/warm,
       parallel EXECUTE, split DAG cold + threads 1/4/8).
 
-Navíc příjde **Balík 0: EU e-commerce demo projekt** (`examples/eu_ecommerce/`)
-— 16 modelů (13 SQL + 3 Python), 57 data tests, deterministický data
-generator ve třech škálách. Nahrazuje Slevomat jako primární E2E showcase
-a mapuje 1:1 na [`VISION.md`](VISION.md) 10 problémů (ephemeral macro
-ekvivalent, parametrizované segmenty, mix SQL + Python v jednom DAGu).
-Hotové na branchi `feat/phase-1-demo-ecommerce`.
+Další Phase 1 přídavky:
+
+- **Balík 0 — EU e-commerce demo projekt** (`examples/eu_ecommerce/`):
+  16 modelů (13 SQL + 3 Python), 57 data tests, deterministický data
+  generator ve třech škálách. Nahrazuje Slevomat jako primární E2E
+  showcase a mapuje 1:1 na [`VISION.md`](VISION.md) 10 problémů
+  (ephemeral macro ekvivalent, parametrizované segmenty, mix SQL +
+  Python v jednom DAGu).
+- **Balík 2 — model disable toggle** (`disabled: true` v schema.yml +
+  CLI `--disable` / `--enable-only`). Nová `status=disabled`
+  hodnota, downstream dostává `skipped_reason=upstream_disabled`, run
+  se nefailuje.
+
+**Můžeme začít Phase 2 (Snowflake/BigQuery/Postgres adaptéry).**
 
 ## Risks / open questions
 

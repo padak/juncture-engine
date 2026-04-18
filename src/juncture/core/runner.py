@@ -26,6 +26,7 @@ from juncture.core.dag import DAG
 from juncture.core.executor import ExecutionResult, Executor
 from juncture.core.model import Materialization, Model, ModelKind
 from juncture.core.project import Project, ProjectError
+from juncture.core.run_history import append_run
 from juncture.core.seeds import load_seeds
 from juncture.parsers.sqlglot_parser import build_statement_dag
 from juncture.testing.runner import TestResult, TestRunner
@@ -67,6 +68,10 @@ class RunRequest:
     reuse_seeds: bool = False
     parallelism_override: int | None = None
     continue_on_error: bool = False
+    #: Append the run's outcome to ``<project>/target/run_history.jsonl``.
+    #: Defaults to True so the web render has data to show; set False
+    #: in CI where the file would clutter artifact diffs.
+    record_history: bool = True
     #: CLI-level ``--disable model_a,model_b`` override — flips
     #: ``Model.disabled`` to True for these names at runtime without
     #: touching ``schema.yml``. Distinct from ``exclude`` because the
@@ -172,7 +177,15 @@ class Runner:
             if request.run_tests and models_result.ok:
                 tests = TestRunner(adapter=adapter, schema=schema).run(project, dag)
 
-        return RunReport(project_name=project.config.name, models=models_result, tests=tests)
+        report = RunReport(project_name=project.config.name, models=models_result, tests=tests)
+        if request.record_history:
+            try:
+                append_run(project.root, report)
+            except OSError as exc:
+                # A read-only target dir shouldn't sink the whole run;
+                # log and move on. The user still gets their RunReport.
+                log.warning("Could not append run history: %s", exc)
+        return report
 
     def plan(self, request: RunRequest) -> DryRunReport:
         """Return the execution plan for ``request`` without touching the DB.

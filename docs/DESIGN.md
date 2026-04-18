@@ -473,7 +473,37 @@ This closes the static case of VISION #6 ("no conditional
 execution"). Full cron-driven conditional execution (``schedule_cron``
 actually honoured rather than just metadata) is Phase 4 scope.
 
-### 3.15 EXECUTE continue-on-error
+### 3.15 Web render (`juncture.web`)
+
+stdlib-only HTTP server + vanilla-JS single-page UI. Entry point is
+`juncture web --project <p>`; the server is a `ThreadingHTTPServer`
+bound to `127.0.0.1` by default. Zero extras dep; `cytoscape.min.js`
+is vendored into `src/juncture/web/static/`.
+
+Routes:
+
+- `GET /` → `static/index.html`
+- `GET /assets/<path>` → files under `static/`
+- `GET /api/project` → project name + config snapshot
+- `GET /api/manifest` → DAG + per-model metadata (kind, materialization, depends_on, tags, disabled, description, schedule_cron)
+- `GET /api/runs?limit=N` → run-history summaries (newest first)
+- `GET /api/runs/<run_id>` → full run entry including per-model status, elapsed, row_count, statement_errors
+
+The run history source is `<project>/target/run_history.jsonl`, an
+append-only JSONL log written by `Runner.run()` via
+`juncture.core.run_history.append_run()`. Disable-toggle awareness:
+nodes with `disabled: true` render dimmed + dashed; downstream
+`status="skipped" skipped_reason="upstream_disabled"` rows get the
+same colour family as `partial` but distinct from cascade failures.
+
+Design rationale: FastAPI + uvicorn would duplicate a fifth of
+``rich``'s footprint for three JSON endpoints; we sidestep it and
+pay the price only if/when we add POST /api/run (trigger-run).
+Meanwhile the read-only loop is enough for the Phase 1 gate demo:
+open the browser, see the DAG, see the last run, click a node, see
+its status + metadata.
+
+### 3.16 EXECUTE continue-on-error
 
 ``duckdb_adapter._execute_raw`` honours ``model.config.continue_on_error``.
 When true, per-statement failures are appended to

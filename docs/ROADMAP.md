@@ -155,12 +155,13 @@ migration from ~26 repair rounds to 2–3.
 
 ### 1.7 Phase 1 gate items
 
-- [ ] **Web render** — `juncture docs --serve` (or equivalent small
-      Python HTTP server) rendering the compiled DAG, per-model
-      schema, and run history from the manifest. **This is the binding
-      gate item for Phase 1**; no Phase 2 work starts until a user can
-      open `localhost:N` and see the DAG of a production-size
-      transformation running on DuckDB. Not yet in the codebase.
+- [x] **Web render** — `juncture web --project <p>` starts a stdlib
+      `http.server` on 127.0.0.1 that serves a single-page cytoscape.js
+      DAG view plus a run-history table from
+      `<project>/target/run_history.jsonl`. Zero extras dependency;
+      vendored cytoscape.js. Reads the compile manifest per-request
+      so schema.yml edits show up on refresh. Closes the binding gate
+      that was holding Phase 2 adapter work.
 - [x] Pilot-migration benchmark numbers recorded in
       [`BENCHMARKS.md`](BENCHMARKS.md) — seven scenarios (monolith
       cold/warm, parallel EXECUTE, split DAG cold + threads 1/4/8).
