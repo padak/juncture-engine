@@ -105,15 +105,16 @@ než půjdeme na Phase 2:
 - [ ] **Web render** — malý Python HTTP server (`juncture docs --serve` nebo
       ekvivalent) renderuje compiled DAG, per-model schema a run history
       z manifestu. **Závazná brána Phase 1 → Phase 2.** V kódu zatím není.
-- [ ] Pilot-migration benchmark čísla zaznamenaná v
-      [`BENCHMARKS.md`](BENCHMARKS.md).
+- [x] Pilot-migration benchmark čísla zaznamenaná v
+      [`BENCHMARKS.md`](BENCHMARKS.md) (7 scénářů: monolith cold/warm,
+      parallel EXECUTE, split DAG cold + threads 1/4/8).
 
 ## Risks / open questions
 
-- **Split-execute vs monolith EXECUTE performance tradeoff.** TBD — čeká na
-  čísla z pilot-migration benchmarků (S1–S5). Bez nich nevíme, jestli doporučit
-  `split-execute` jako default pro migrované projekty, nebo ho nechat jako
-  opt-in pro DAG-level paralelismus.
+- **Split-execute vs monolith EXECUTE performance tradeoff — vyřešeno.**
+  Split DAG (3:06 warm s threads=4) je o ~13 % rychlejší než monolith
+  EXECUTE (3:34 warm); threads > 4 už nic nepřidá (widest layer 293 sytí
+  4 CPU). Detail: [`BENCHMARKS.md`](BENCHMARKS.md) §Pilot-migration.
 - **Intra-script parallel EXECUTE race condition (P3).** Dnes nuceně
   `parallelism: 1` na migrovaných bodies — blokuje jeden z benchmark scénářů.
 - **kbagent OOM bug** reported proti

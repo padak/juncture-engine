@@ -153,9 +153,9 @@ migration from ~26 repair rounds to 2–3.
       gate item for Phase 1**; no Phase 2 work starts until a user can
       open `localhost:N` and see the DAG of a production-size
       transformation running on DuckDB. Not yet in the codebase.
-- [ ] Pilot-migration benchmark numbers recorded in
-      [`BENCHMARKS.md`](BENCHMARKS.md) (sequential baseline vs
-      `parallelism ∈ {1, 2, 4, 8}`).
+- [x] Pilot-migration benchmark numbers recorded in
+      [`BENCHMARKS.md`](BENCHMARKS.md) — seven scenarios (monolith
+      cold/warm, parallel EXECUTE, split DAG cold + threads 1/4/8).
 
 ## Phase 2 — Production backends + Keboola component
 
