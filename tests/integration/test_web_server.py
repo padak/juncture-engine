@@ -340,6 +340,178 @@ def test_api_manifest_openlineage_shape(project_with_history: Path) -> None:
         server.server_close()
 
 
+def test_api_seeds_empty_when_no_seeds(project_with_history: Path) -> None:
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/seeds")
+        assert status == 200
+        assert json.loads(body) == {"seeds": []}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_seeds_exposes_csv_seed(tmp_path: Path) -> None:
+    root = tmp_path / "seedproj"
+    (root / "models").mkdir(parents=True)
+    (root / "seeds").mkdir(parents=True)
+    db_path = root / "out.duckdb"
+    (root / "juncture.yaml").write_text(
+        f"""name: seedproj
+profile: local
+default_schema: main
+connections:
+  local:
+    type: duckdb
+    path: {db_path}
+"""
+    )
+    (root / "seeds" / "raw_users.csv").write_text("id,name\n1,alice\n2,bob\n")
+    (root / "models" / "mart.sql").write_text("SELECT id FROM {{ ref('raw_users') }}")
+    Runner().run(RunRequest(project_path=root))
+
+    server, host, port = _serve_in_thread(root)
+    try:
+        status, _, body = _get(host, port, "/api/seeds")
+        assert status == 200
+        payload = json.loads(body)
+        assert [s["name"] for s in payload["seeds"]] == ["raw_users"]
+        seed = payload["seeds"][0]
+        assert seed["format"] == "csv"
+        assert seed["path"].endswith("raw_users.csv")
+        # CSV seeds currently record row_count=None in the run history; the
+        # seeds endpoint surfaces whatever the history has (unchanged here).
+        assert "row_count" in seed
+        # No cached seed_sentinels.json in a fresh project — sentinels is empty.
+        assert seed["sentinels"] == {}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_model_history_returns_sparkline_data(project_with_history: Path) -> None:
+    # Add a second run to give the history more than one data point.
+    Runner().run(RunRequest(project_path=project_with_history))
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/models/mart/history?limit=20")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["model"] == "mart"
+        assert len(payload["runs"]) == 2
+        assert all(r["status"] == "success" for r in payload["runs"])
+        assert payload["p50_elapsed_seconds"] is not None
+        assert payload["success_rate_30d"] == 1.0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_run_diagnostics_bucketizes_errors(tmp_path: Path) -> None:
+    """Feed a handcrafted run_history entry with mixed error shapes."""
+    from juncture.core.run_history import history_path
+
+    root = tmp_path / "diagproj"
+    (root / "models").mkdir(parents=True)
+    db_path = root / "out.duckdb"
+    (root / "juncture.yaml").write_text(
+        f"""name: diagproj
+profile: local
+default_schema: main
+connections:
+  local:
+    type: duckdb
+    path: {db_path}
+"""
+    )
+    (root / "models" / "stg.sql").write_text("SELECT 1 AS id")
+    Runner().run(RunRequest(project_path=root))
+
+    # Append a synthetic failing run with three statement errors the
+    # classifier recognises as conversion + missing_object.
+    fake = {
+        "run_id": "fakefakefake0001",
+        "project_name": "diagproj",
+        "started_at": "2026-04-18T12:00:00+00:00",
+        "elapsed_seconds": 0.1,
+        "ok": False,
+        "successes": 0,
+        "failures": 1,
+        "skipped": 0,
+        "partial": 0,
+        "disabled": 0,
+        "models": [
+            {
+                "name": "bad",
+                "kind": "sql",
+                "materialization": "execute",
+                "status": "failed",
+                "elapsed_seconds": 0.01,
+                "error": "boom",
+                "row_count": None,
+                "skipped_reason": None,
+                "statement_errors": [
+                    {
+                        "index": 0,
+                        "layer": 0,
+                        "error": "Conversion Error: Could not convert string '' to INT64",
+                    },
+                    {
+                        "index": 1,
+                        "layer": 0,
+                        "error": "Conversion Error: Could not convert string 'n/a' to BIGINT",
+                    },
+                    {
+                        "index": 2,
+                        "layer": 1,
+                        "error": "Catalog Error: Table with name whatever does not exist",
+                    },
+                ],
+            }
+        ],
+        "tests": [],
+    }
+    hp = history_path(root)
+    hp.parent.mkdir(parents=True, exist_ok=True)
+    with hp.open("a") as fh:
+        fh.write(json.dumps(fake) + "\n")
+
+    server, host, port = _serve_in_thread(root)
+    try:
+        status, _, body = _get(host, port, "/api/runs/fakefakefake0001/diagnostics")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["buckets"]["conversion"] == 2
+        assert payload["buckets"]["missing_object"] == 1
+        assert "bad" in payload["per_model"]
+        entries = payload["per_model"]["bad"]
+        assert entries[0]["bucket"] == "conversion"
+        assert entries[2]["bucket"] == "missing_object"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_llm_knowledge_bundles_everything(project_with_history: Path) -> None:
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/llm-knowledge")
+        assert status == 200
+        kb = json.loads(body)
+        assert kb["format_version"] == "1"
+        assert kb["project"]["name"] == "webproj"
+        model_names = {m["name"] for m in kb["models"]}
+        assert {"stg", "mart"} <= model_names
+        mart = next(m for m in kb["models"] if m["name"] == "mart")
+        assert mart["sql"] and "{{ ref('stg') }}" in mart["sql"]
+        assert mart["sql_rendered"] and "main.stg" in mart["sql_rendered"]
+        assert kb["dag"]["order"] == ["stg", "mart"]
+        assert kb["latest_run"]["ok"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_static_directory_traversal_blocked(project_with_history: Path) -> None:
     server, host, port = _serve_in_thread(project_with_history)
     try:

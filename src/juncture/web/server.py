@@ -14,8 +14,12 @@ Routes:
 - ``GET /api/manifest`` → DAG + per-model metadata (disabled, tags, path)
 - ``GET /api/manifest/openlineage`` → manifest in OpenLineage RunEvent shape
 - ``GET /api/models/<name>`` → per-model detail (source + columns + tests)
+- ``GET /api/models/<name>/history`` → last-N run outcomes for reliability
 - ``GET /api/runs`` → ``?limit=N`` run history summary
 - ``GET /api/runs/<run_id>`` → the full entry for that run
+- ``GET /api/runs/<run_id>/diagnostics`` → classified statement errors
+- ``GET /api/seeds`` → per-seed metadata (format, inferred types, sentinels)
+- ``GET /api/llm-knowledge`` → single-shot LLM-friendly snapshot of the project
 - ``GET /api/project`` → project name + config snapshot
 - ``GET /api/project/config`` → full ``juncture.yaml`` parsed shape
 - ``GET /api/project/readme`` → raw README markdown (if present)
@@ -44,6 +48,7 @@ import yaml
 from juncture.core.model import Model, ModelKind
 from juncture.core.project import Project
 from juncture.core.run_history import read_runs
+from juncture.diagnostics import classify_statement_errors
 from juncture.observability.lineage import manifest_to_openlineage_events
 from juncture.parsers.sqlglot_parser import render_refs
 
@@ -109,6 +114,15 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                     self._send_json(self._manifest_payload())
                 elif path == "/api/manifest/openlineage":
                     self._send_json(self._manifest_openlineage_payload())
+                elif path == "/api/seeds":
+                    self._send_json(self._seeds_payload())
+                elif path == "/api/llm-knowledge":
+                    self._send_json(self._llm_knowledge_payload())
+                elif path.startswith("/api/models/") and path.endswith("/history"):
+                    name = unquote(path[len("/api/models/") : -len("/history")])
+                    query = parse_qs(parsed.query or "")
+                    limit = int(query.get("limit", ["20"])[0])
+                    self._send_json(self._model_history_payload(name, limit=limit))
                 elif path.startswith("/api/models/"):
                     name = unquote(path[len("/api/models/") :])
                     if not name:
@@ -119,6 +133,9 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                     query = parse_qs(parsed.query or "")
                     limit = int(query.get("limit", ["50"])[0])
                     self._send_json(self._runs_payload(limit=limit))
+                elif path.startswith("/api/runs/") and path.endswith("/diagnostics"):
+                    run_id = path[len("/api/runs/") : -len("/diagnostics")]
+                    self._send_json(self._run_diagnostics_payload(run_id))
                 elif path.startswith("/api/runs/"):
                     run_id = path[len("/api/runs/") :]
                     self._send_json(self._run_detail_payload(run_id))
@@ -339,6 +356,192 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                     return asdict(e)
             raise FileNotFoundError(run_id)
 
+        def _run_diagnostics_payload(self, run_id: str) -> dict[str, Any]:
+            """Aggregate statement errors in a run, classified by bucket.
+
+            Returns bucket counts at the top and per-model breakdown so the
+            UI can render "type_mismatch: 7, sentinel: 3" and offer a
+            click-through filter (RFC §5.2 P1.4).
+            """
+            entries = read_runs(project_path)
+            run = next((e for e in entries if e.run_id == run_id), None)
+            if run is None:
+                raise FileNotFoundError(run_id)
+
+            buckets: dict[str, int] = {}
+            subcategories: dict[str, int] = {}
+            per_model: dict[str, list[dict[str, Any]]] = {}
+
+            for m in run.models:
+                raw_errors = m.get("statement_errors") or []
+                if not raw_errors:
+                    continue
+                classifications = classify_statement_errors([se.get("error", "") for se in raw_errors])
+                model_entries: list[dict[str, Any]] = []
+                for se, cls in zip(raw_errors, classifications, strict=False):
+                    buckets[cls.bucket.value] = buckets.get(cls.bucket.value, 0) + 1
+                    subcategories[cls.subcategory] = subcategories.get(cls.subcategory, 0) + 1
+                    model_entries.append(
+                        {
+                            "index": se.get("index"),
+                            "layer": se.get("layer"),
+                            "error": se.get("error"),
+                            "bucket": cls.bucket.value,
+                            "subcategory": cls.subcategory,
+                            "fix_hint": cls.fix_hint,
+                            "operands": cls.operands,
+                        }
+                    )
+                per_model[m["name"]] = model_entries
+            return {
+                "run_id": run.run_id,
+                "buckets": buckets,
+                "subcategories": subcategories,
+                "per_model": per_model,
+            }
+
+        def _model_history_payload(self, name: str, *, limit: int) -> dict[str, Any]:
+            """Per-model last-N run outcomes for the reliability micro-chart.
+
+            Computes p50 / p95 elapsed and the 30-day success rate from
+            whatever run_history.jsonl already has; no new persistence.
+            """
+            entries = read_runs(project_path)
+            runs: list[dict[str, Any]] = []
+            elapsed_samples: list[float] = []
+            for e in entries[:limit]:
+                for m in e.models:
+                    if m.get("name") == name:
+                        runs.append(
+                            {
+                                "run_id": e.run_id,
+                                "started_at": e.started_at,
+                                "status": m.get("status"),
+                                "elapsed_seconds": m.get("elapsed_seconds"),
+                                "row_count": m.get("row_count"),
+                            }
+                        )
+                        el = m.get("elapsed_seconds")
+                        if isinstance(el, int | float):
+                            elapsed_samples.append(float(el))
+                        break
+            recent_30d = _runs_in_last_days(entries, 30, name)
+            return {
+                "model": name,
+                "runs": runs,
+                "p50_elapsed_seconds": _percentile(elapsed_samples, 0.50),
+                "p95_elapsed_seconds": _percentile(elapsed_samples, 0.95),
+                "success_rate_30d": _success_rate(recent_30d),
+                "sample_size_30d": len(recent_30d),
+            }
+
+        def _llm_knowledge_payload(self) -> dict[str, Any]:
+            """Single-shot project snapshot shaped for LLM ingestion.
+
+            Packs everything a model needs to answer "what does this
+            project do, what are the dependencies, what's the source of
+            each transformation" without chasing N endpoints. Resolves:
+
+            - Project metadata + parsed ``juncture.yaml`` + README
+            - Git head (when available)
+            - Full DAG: every model with path, kind, materialization,
+              dependencies, description, columns, tests, and source
+              (SQL body + rendered FQN variant, or Python source)
+            - Seeds with inferred types + sentinel cache
+            - The most recent run outcome (not the full history; we want
+              the file to stay under a few MB even on 300-model projects)
+
+            The output is one JSON document so copy-paste into a
+            ChatGPT / Claude context window or a RAG index is frictionless.
+            """
+            project = Project.load(project_path)
+            dag = project.dag()
+            manifest = self._manifest_payload()
+
+            # Per-model deep detail reuses the single-model endpoint so the
+            # format stays 1:1 with what the UI's Source tab already shows.
+            models_detail: list[dict[str, Any]] = []
+            for m in dag.models():
+                try:
+                    models_detail.append(self._model_detail_payload(m.name))
+                except FileNotFoundError:
+                    continue
+
+            seeds_payload = self._seeds_payload()
+            cfg_payload = self._project_config_payload()
+            readme_payload = self._project_readme_payload()
+            git_payload = self._project_git_payload()
+            latest = read_runs(project_path, limit=1)
+            latest_run = asdict(latest[0]) if latest else None
+
+            return {
+                "format_version": "1",
+                "project": {
+                    "name": project.config.name,
+                    "version": project.config.version,
+                    "profile": project.config.profile,
+                    "root": str(project.root),
+                    "default_materialization": project.config.default_materialization.value,
+                    "default_schema": project.config.default_schema,
+                },
+                "config": cfg_payload,
+                "readme": readme_payload,
+                "git": git_payload,
+                "dag": {
+                    "order": manifest["order"],
+                    "edges": manifest["edges"],
+                },
+                "models": models_detail,
+                "seeds": seeds_payload["seeds"],
+                "latest_run": latest_run,
+            }
+
+        def _seeds_payload(self) -> dict[str, Any]:
+            """Per-seed metadata: format, path, inferred types, sentinels.
+
+            Inferred types come from ``Project.seed_schemas()`` (cached in
+            ``.juncture/seed_schemas.json``). Sentinels live in a sibling
+            ``.juncture/seed_sentinels.json`` populated by the seed loader
+            when run with the sentinel-detection flag; if the file is
+            missing the sentinels field is an empty dict.
+            """
+            project = Project.load(project_path)
+            schemas = project.seed_schemas()
+            sentinels_path = project.root / ".juncture" / "seed_sentinels.json"
+            sentinels: dict[str, dict[str, Any]] = {}
+            if sentinels_path.is_file():
+                try:
+                    sentinels = json.loads(sentinels_path.read_text()) or {}
+                except (OSError, ValueError):
+                    sentinels = {}
+
+            # Row counts: pull from the most recent run's models[] if the
+            # seed appears there, else unknown.
+            run_rows: dict[str, int | None] = {}
+            latest = read_runs(project_path, limit=1)
+            if latest:
+                for m in latest[0].models:
+                    if m.get("kind") == "seed":
+                        run_rows[m["name"]] = m.get("row_count")
+
+            seeds: list[dict[str, Any]] = []
+            for s in project.seeds:
+                parquet_files = 0
+                if s.format == "parquet" and s.path.is_dir():
+                    parquet_files = sum(1 for _ in s.path.glob("*.parquet"))
+                seeds.append(
+                    {
+                        "name": s.name,
+                        "format": s.format,
+                        "path": _relative_path_str(s.path, project.root),
+                        "parquet_files": parquet_files,
+                        "inferred_types": schemas.get(s.name, {}),
+                        "sentinels": sentinels.get(s.name, {}),
+                        "row_count": run_rows.get(s.name),
+                    }
+                )
+            return {"seeds": seeds}
+
         # --- Response helpers ---------------------------------------------
         def _send_json(self, payload: Any, *, status: int = 200) -> None:
             body = json.dumps(payload, default=str).encode("utf-8")
@@ -392,7 +595,51 @@ def _relative_path(model: Model, root: Path) -> str | None:
     """
     if model.path is None:
         return None
+    return _relative_path_str(model.path, root)
+
+
+def _relative_path_str(path: Path, root: Path) -> str:
     try:
-        return str(model.path.relative_to(root))
+        return str(path.relative_to(root))
     except ValueError:
-        return str(model.path)
+        return str(path)
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    """Nearest-rank percentile; ``None`` on empty input.
+
+    Deliberately stdlib-only so the web server picks up no new deps.
+    ``q`` is a fraction in ``[0, 1]``.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    k = max(0, min(len(ordered) - 1, round(q * (len(ordered) - 1))))
+    return ordered[k]
+
+
+def _runs_in_last_days(entries: list[Any], days: int, model_name: str) -> list[dict[str, Any]]:
+    """Return per-model entries whose run start is within ``days`` of now."""
+    from datetime import UTC, datetime, timedelta
+
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    picked: list[dict[str, Any]] = []
+    for e in entries:
+        try:
+            started = datetime.fromisoformat(e.started_at)
+        except ValueError:
+            continue
+        if started < cutoff:
+            continue
+        for m in e.models:
+            if m.get("name") == model_name:
+                picked.append(m)
+                break
+    return picked
+
+
+def _success_rate(models: list[dict[str, Any]]) -> float | None:
+    if not models:
+        return None
+    ok = sum(1 for m in models if m.get("status") == "success")
+    return ok / len(models)
