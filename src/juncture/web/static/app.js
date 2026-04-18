@@ -205,6 +205,20 @@
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
+  // Export popover toggling.
+  const exportToggle = document.getElementById("dag-export-toggle");
+  const exportPop = document.getElementById("dag-export-pop");
+  if (exportToggle && exportPop) {
+    exportToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      exportPop.hidden = !exportPop.hidden;
+    });
+    document.addEventListener("click", (e) => {
+      if (!exportPop.hidden && !exportPop.contains(e.target) && e.target !== exportToggle) {
+        exportPop.hidden = true;
+      }
+    });
+  }
   const dlManifest = document.getElementById("dl-manifest");
   const dlOpenLineage = document.getElementById("dl-openlineage");
   const dlLlmKb = document.getElementById("dl-llm-kb");
@@ -233,7 +247,6 @@
       $("#model-detail").innerHTML = `<div class="detail-empty">Load failed: ${escape(e.message)}</div>`;
       return;
     }
-    document.querySelector(".detail-tabs").classList.add("visible");
     // Default source view: if SQL model has refs, show rendered; else raw.
     if (currentModelDetail.kind === "sql" && currentModelDetail.depends_on.length === 0) {
       sourceView = "raw";
@@ -258,49 +271,88 @@
   }
 
   function renderMetadataTab(m) {
-    const lastStatus = latestRunByModel[m.name] || "(never run)";
+    const lastStatus = latestRunByModel[m.name] || "never run";
+    const pill = (label, cls = "") =>
+      `<span class="chip ${cls}">${escape(label)}</span>`;
     const deps = m.depends_on.length
-      ? m.depends_on.map(d => `<code>${escape(d)}</code>`).join(" ")
+      ? m.depends_on.map(d => `<code class="dep-chip">${escape(d)}</code>`).join(" ")
       : "<em>none</em>";
-    const tags = m.tags && m.tags.length
-      ? m.tags.map(t => `<code>${escape(t)}</code>`).join(" ") : null;
-    // Fire-and-forget history + docs fetches; their DOM containers fill in
-    // when the promises resolve so the main metadata block renders instantly.
+    const tags = (m.tags || []).map(t => pill(t, "chip-tag")).join(" ");
+    // Fire-and-forget history + docs; their containers fill in async so the
+    // main metadata block is not blocked on two round-trips.
     loadReliability(m.name);
     loadDocs(m.name);
+
     const g = m.governance || {};
-    const hasGov = g.owner || g.team || g.criticality || g.sla_freshness_hours || (g.consumers || []).length;
-    const consumers = (g.consumers || []).map(c => {
+    const hasGov = g.owner || g.team || g.business_unit || g.criticality
+                || g.sla_freshness_hours != null || g.sla_success_rate_target != null
+                || (g.consumers || []).length;
+
+    const consumersHtml = (g.consumers || []).map(c => {
       if (c.url) return `<a href="${escape(c.url)}" target="_blank" rel="noopener">${escape(c.name)}</a>`;
       return escape(c.name);
-    }).join(" &middot; ");
-    const govBlock = hasGov ? `
-      <dt>Owner / team</dt><dd>${escape(g.owner || "—")}${g.team ? ` &middot; <code>${escape(g.team)}</code>` : ""}</dd>
-      ${g.business_unit ? `<dt>Business unit</dt><dd>${escape(g.business_unit)}</dd>` : ""}
-      ${g.criticality ? `<dt>Criticality</dt><dd><span class="status-pill ${g.criticality === "tier-1" ? "failed" : "partial"}">${escape(g.criticality)}</span></dd>` : ""}
-      ${g.sla_freshness_hours != null ? `<dt>SLA freshness</dt><dd>${g.sla_freshness_hours}h</dd>` : ""}
-      ${g.sla_success_rate_target != null ? `<dt>SLA success target</dt><dd>${(g.sla_success_rate_target * 100).toFixed(0)}%</dd>` : ""}
-      ${consumers ? `<dt>Consumers</dt><dd>${consumers}</dd>` : ""}
-    ` : "";
-    return `
-      <div class="detail-block">
-        <dl>
-          <dt>Name</dt><dd><strong>${escape(m.name)}</strong></dd>
-          <dt>Kind / materialization</dt>
-          <dd><code>${escape(m.kind)}</code> / <code>${escape(m.materialization)}</code></dd>
-          ${m.path ? `<dt>Source path</dt><dd><code>${escape(m.path)}</code></dd>` : ""}
-          <dt>Last run</dt><dd><span class="status-pill ${escape(lastStatus)}">${escape(lastStatus)}</span></dd>
-          ${m.disabled ? '<dt>State</dt><dd><span class="status-pill disabled">disabled</span></dd>' : ""}
-          ${m.description ? `<dt>Description</dt><dd>${escape(m.description)}</dd>` : ""}
-          <dt>Depends on</dt><dd>${deps}</dd>
-          ${m.schedule_cron ? `<dt>Schedule</dt><dd><code>${escape(m.schedule_cron)}</code></dd>` : ""}
-          ${tags ? `<dt>Tags</dt><dd>${tags}</dd>` : ""}
-          ${govBlock}
-          <dt>Reliability</dt>
-          <dd id="reliability-block"><em>loading&hellip;</em></dd>
-          <dt>Long-form docs</dt>
-          <dd id="docs-block"><em>loading&hellip;</em></dd>
+    }).join(" · ");
+
+    // Identity: model name as an h3, with chips for kind/materialization and
+    // the last-run status so a reader instantly sees "what + how did it go".
+    const statusCls = lastStatus.replace(/\s+/g, "-");
+    const identityHead = `
+      <div class="md-identity">
+        <h3 class="md-title">${escape(m.name)}</h3>
+        <div class="md-chips">
+          ${pill(m.kind, `chip-kind chip-kind-${m.kind}`)}
+          ${pill(m.materialization, "chip-materialization")}
+          <span class="status-pill ${escape(statusCls)}">${escape(lastStatus)}</span>
+          ${m.disabled ? pill("disabled", "chip-disabled") : ""}
+        </div>
+        ${m.description ? `<p class="md-desc">${escape(m.description)}</p>` : ""}
+      </div>`;
+
+    // Core info: path + depends_on + tags in a 2-column key-value grid so
+    // the vertical space is spent on content, not labels.
+    const coreGrid = `
+      <dl class="md-grid">
+        ${m.path ? `<dt>Source</dt><dd><code>${escape(m.path)}</code></dd>` : ""}
+        <dt>Depends on</dt><dd>${deps}</dd>
+        ${m.schedule_cron ? `<dt>Schedule</dt><dd><code>${escape(m.schedule_cron)}</code></dd>` : ""}
+        ${tags ? `<dt>Tags</dt><dd>${tags}</dd>` : ""}
+      </dl>`;
+
+    const govCard = hasGov ? `
+      <section class="md-card">
+        <h4 class="md-card-title">Governance</h4>
+        <dl class="md-grid">
+          ${g.owner ? `<dt>Owner</dt><dd>${escape(g.owner)}</dd>` : ""}
+          ${g.team ? `<dt>Team</dt><dd><code>${escape(g.team)}</code></dd>` : ""}
+          ${g.business_unit ? `<dt>BU</dt><dd>${escape(g.business_unit)}</dd>` : ""}
+          ${g.criticality ? `<dt>Tier</dt><dd>${pill(g.criticality, `chip-tier chip-${g.criticality}`)}</dd>` : ""}
+          ${g.sla_freshness_hours != null ? `<dt>SLA freshness</dt><dd>${g.sla_freshness_hours}h</dd>` : ""}
+          ${g.sla_success_rate_target != null ? `<dt>SLA success</dt><dd>&ge; ${(g.sla_success_rate_target * 100).toFixed(0)}%</dd>` : ""}
+          ${consumersHtml ? `<dt>Consumers</dt><dd>${consumersHtml}</dd>` : ""}
         </dl>
+      </section>` : "";
+
+    // Reliability and Docs sit in their own cards so the async fill-in does
+    // not shift the rest of the metadata block; also gives them a clean
+    // "loading" label without polluting the grid.
+    const reliabilityCard = `
+      <section class="md-card" id="reliability-card">
+        <h4 class="md-card-title">Reliability</h4>
+        <div id="reliability-block" class="md-reliability"><em>loading&hellip;</em></div>
+      </section>`;
+    const docsCard = `
+      <section class="md-card" id="docs-card">
+        <h4 class="md-card-title">Long-form docs</h4>
+        <div id="docs-block"><em>loading&hellip;</em></div>
+      </section>`;
+
+    return `
+      <div class="md-root">
+        ${identityHead}
+        ${coreGrid}
+        ${govCard}
+        ${reliabilityCard}
+        ${docsCard}
       </div>`;
   }
 
@@ -310,14 +362,14 @@
     const block = document.getElementById("docs-block");
     if (!block) return;
     if (!d.markdown) {
-      block.innerHTML = "<em>No long-form docs (set <code>docs:</code> in schema.yml or add a sibling .md).</em>";
+      block.innerHTML = '<em class="md-muted">No long-form docs. Add <code>docs:</code> in schema.yml or drop a sibling <code>.md</code>.</em>';
       return;
     }
     const html = window.markdownit
       ? window.markdownit({ html: false, linkify: true }).render(d.markdown)
       : `<pre>${escape(d.markdown)}</pre>`;
-    block.innerHTML = `<div class="proj-readme">${html}</div>
-      <div style="font-size:10.5px;color:var(--text-dim);margin-top:4px;">Source: <code>${escape(d.source)}</code></div>`;
+    block.innerHTML = `<div class="proj-readme md-docs">${html}</div>
+      <div class="md-source">source: <code>${escape(d.source)}</code></div>`;
   }
 
   async function loadReliability(name) {
@@ -325,13 +377,23 @@
     try { h = await api.modelHistory(name, 20); } catch (_) { return; }
     const block = document.getElementById("reliability-block");
     if (!block) return;
+    if (!h.runs.length) {
+      block.innerHTML = '<em class="md-muted">No run history yet.</em>';
+      return;
+    }
     const p50 = h.p50_elapsed_seconds != null ? `${h.p50_elapsed_seconds.toFixed(2)}s` : "—";
     const p95 = h.p95_elapsed_seconds != null ? `${h.p95_elapsed_seconds.toFixed(2)}s` : "—";
-    const sr = h.success_rate_30d != null ? `${(h.success_rate_30d * 100).toFixed(0)}% (${h.sample_size_30d})` : "—";
+    const sr = h.success_rate_30d != null ? `${(h.success_rate_30d * 100).toFixed(0)}%` : "—";
+    // Inline layout: sparkline on the left, compact stats on the right,
+    // one horizontal row so the Reliability card stays dense.
     block.innerHTML = `
-      ${renderSparkline(h.runs)}
-      <div style="margin-top:6px; font-size:11.5px; color: var(--text-dim);">
-        p50 ${p50} &middot; p95 ${p95} &middot; 30-day success ${sr}
+      <div class="md-rel-row">
+        ${renderSparkline(h.runs)}
+        <dl class="md-rel-stats">
+          <div><dt>p50</dt><dd>${p50}</dd></div>
+          <div><dt>p95</dt><dd>${p95}</dd></div>
+          <div><dt>30d</dt><dd>${sr} <span class="md-muted">(${h.sample_size_30d})</span></dd></div>
+        </dl>
       </div>`;
   }
 

@@ -28,25 +28,16 @@
   <section id="view-dag" class="view active">
     <aside class="sidebar">
       <div class="dag-toolbar">
-        <input id="dag-search" type="search" placeholder="Search models (Esc to clear)" autocomplete="off">
-        <div class="dag-export">
-          <button id="dl-manifest" title="Download manifest.json">manifest</button>
-          <button id="dl-openlineage" title="Download manifest.openlineage.json">OL</button>
-          <button id="dl-llm-kb" title="Download llm-knowledge.json — complete project snapshot for LLM ingestion">LLM kb</button>
+        <input id="dag-search" type="search" placeholder="Search nodes&hellip; (Esc)" autocomplete="off">
+        <div class="dag-export" id="dag-export-menu">
+          <button id="dag-export-toggle" class="icon-btn" title="Export">&#8595;</button>
+          <div class="dag-export-pop" id="dag-export-pop" hidden>
+            <button id="dl-manifest">Download <code>manifest.json</code></button>
+            <button id="dl-openlineage">Download <code>manifest.openlineage.json</code></button>
+            <button id="dl-llm-kb">Download <code>llm-knowledge.json</code></button>
+          </div>
         </div>
       </div>
-
-      <h2>Legend</h2>
-      <ul class="legend">
-        <li><span class="dot k-seed"></span>Seed (amber parallelogram)</li>
-        <li><span class="dot k-sql"></span>SQL (blue rounded)</li>
-        <li><span class="dot k-python"></span>Python (green rounded)</li>
-        <li><span class="ring s-never"></span>Never run (thin)</li>
-        <li><span class="ring s-success"></span>Last run: success</li>
-        <li><span class="ring s-failed"></span>Last run: failed</li>
-        <li><span class="ring s-partial"></span>Last run: partial</li>
-        <li><span class="dot s-disabled"></span>Disabled (dashed)</li>
-      </ul>
 
       <div class="detail-tabs">
         <button data-detail="metadata" class="detail-tab active">Metadata</button>
@@ -55,6 +46,20 @@
         <button data-detail="tests" class="detail-tab">Tests</button>
       </div>
       <div id="model-detail" class="detail-empty">Click a node in the DAG.</div>
+
+      <details class="legend-card">
+        <summary>Legend</summary>
+        <ul class="legend">
+          <li><span class="dot k-seed"></span>Seed (amber parallelogram)</li>
+          <li><span class="dot k-sql"></span>SQL (blue rounded)</li>
+          <li><span class="dot k-python"></span>Python (green rounded)</li>
+          <li><span class="ring s-never"></span>Never run (thin)</li>
+          <li><span class="ring s-success"></span>Last run: success</li>
+          <li><span class="ring s-failed"></span>Last run: failed</li>
+          <li><span class="ring s-partial"></span>Last run: partial</li>
+          <li><span class="dot s-disabled"></span>Disabled (dashed)</li>
+        </ul>
+      </details>
     </aside>
     <div id="cy"></div>
   </section>
