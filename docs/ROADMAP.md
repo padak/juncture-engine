@@ -175,9 +175,13 @@ view, diagnostics, seeds, reliability) and a CDO (ownership, SLA,
 PII propagation, portfolio view). Runs in parallel with Phase 2
 adapter work — neither blocks the other.
 
-- [ ] **M1 — P0 "readable"**: source viewer, kind-vs-status split,
+- [x] **M1 — P0 "readable"**: source viewer, kind-vs-status split,
       clickable per-model drill-down in Runs, tests panel.
-      (~1 engineer-day.)
+      Landed with `/api/models/<name>` + `path` in manifest;
+      vendored prism.js for SQL/Python syntax highlighting;
+      DAG now encodes kind as shape+fill and status as border
+      thickness/colour so seed / SQL / Python are distinguishable
+      even on all-success runs.
 - [ ] **M2 — P1 project overview + search + export**:
       `juncture.yaml` + README render, fulltext DAG search,
       manifest / OpenLineage export. (~2 engineer-days.)

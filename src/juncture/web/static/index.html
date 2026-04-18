@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Juncture — DAG</title>
 <link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/prism.min.css">
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
-    <span class="logo">◆</span>
+    <span class="logo">&#9670;</span>
     <strong id="project-name">juncture</strong>
     <span class="sub" id="project-sub"></span>
   </div>
@@ -24,15 +25,22 @@
     <aside class="sidebar">
       <h2>Legend</h2>
       <ul class="legend">
-        <li><span class="dot k-seed"></span>Seed</li>
-        <li><span class="dot k-sql"></span>SQL</li>
-        <li><span class="dot k-python"></span>Python</li>
-        <li><span class="dot s-disabled"></span>Disabled</li>
-        <li><span class="dot s-success"></span>Last run: success</li>
-        <li><span class="dot s-failed"></span>Last run: failed</li>
-        <li><span class="dot s-partial"></span>Last run: partial</li>
+        <li><span class="dot k-seed"></span>Seed (amber parallelogram)</li>
+        <li><span class="dot k-sql"></span>SQL (blue rounded)</li>
+        <li><span class="dot k-python"></span>Python (green rounded)</li>
+        <li><span class="ring s-never"></span>Never run (thin)</li>
+        <li><span class="ring s-success"></span>Last run: success</li>
+        <li><span class="ring s-failed"></span>Last run: failed</li>
+        <li><span class="ring s-partial"></span>Last run: partial</li>
+        <li><span class="dot s-disabled"></span>Disabled (dashed)</li>
       </ul>
-      <h2>Model detail</h2>
+
+      <div class="detail-tabs">
+        <button data-detail="metadata" class="detail-tab active">Metadata</button>
+        <button data-detail="source" class="detail-tab">Source</button>
+        <button data-detail="schema" class="detail-tab">Schema</button>
+        <button data-detail="tests" class="detail-tab">Tests</button>
+      </div>
       <div id="model-detail" class="detail-empty">Click a node in the DAG.</div>
     </aside>
     <div id="cy"></div>
@@ -53,10 +61,13 @@
 </main>
 
 <footer>
-  <span id="status-line">loading…</span>
+  <span id="status-line">loading&hellip;</span>
 </footer>
 
 <script src="/assets/cytoscape.min.js"></script>
+<script src="/assets/prism.min.js" data-manual></script>
+<script src="/assets/prism-sql.min.js"></script>
+<script src="/assets/prism-python.min.js"></script>
 <script src="/assets/app.js"></script>
 </body>
 </html>

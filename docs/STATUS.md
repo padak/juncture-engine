@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `feat/phase-1-web-render` · **Phase 1 gate closed**.
+> **Last updated:** 2026-04-18 · branch `feat/web-v2-readable` · **M1 (web UI v2) in flight**.
 
 ## Point: co a proč děláme
 
@@ -137,7 +137,14 @@ vad, které shrnuje RFC [`docs/rfcs/0001-web-ui-v2.md`](rfcs/0001-web-ui-v2.md).
 Čtyři milníky M1–M4 (viz [`ROADMAP.md`](ROADMAP.md) §1.8) přidají
 source viewer, diagnostics v prohlížeči, seeds tab a CDO portfolio
 vrstvu. Běží paralelně s Phase 2 adaptéry — žádný track neblokuje
-druhý. RFC je **proposed**, čeká na sign-off.
+druhý.
+
+| Milník | Branch | Stav |
+|---|---|---|
+| M1 — P0 "readable" | `feat/web-v2-readable` | **v letu** — source viewer + kind/status split + clickable Runs drawer + tests panel |
+| M2 — P1 overview + search + export | `feat/web-v2-overview` | pending |
+| M3 — P1 diagnostics + seeds + reliability | `feat/web-v2-diagnostics` | pending |
+| M4 — P2 governance | `feat/web-v2-governance` + `feat/web-v2-compliance` | pending |
 
 ## Risks / open questions
 
