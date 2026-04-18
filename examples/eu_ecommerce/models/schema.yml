@@ -14,6 +14,16 @@ models:
   - name: stg_customers
     description: Customer dimension after type casts and email normalisation.
     tags: [staging]
+    owner: data-platform@example.com
+    team: analytics
+    business_unit: Growth
+    criticality: tier-1
+    sla:
+      freshness_hours: 24
+      success_rate_target: 0.99
+    consumers:
+      - name: Exec daily dashboard
+        url: https://bi.example/execs
     columns:
       - name: customer_id
         description: Primary key — BIGINT cast of the CSV id.
@@ -133,6 +143,17 @@ models:
   - name: customer_segments
     description: Segment labels (vip/loyal/regular/at_risk/lost) per customer.
     tags: [marts]
+    owner: marketing-data@example.com
+    team: marketing-data
+    business_unit: Marketing
+    criticality: tier-1
+    sla:
+      freshness_hours: 24
+      success_rate_target: 0.98
+    consumers:
+      - name: Retention dashboard
+        url: https://bi.example/retention
+      - name: Lifecycle marketing team
     columns:
       - name: customer_id
         tests: [not_null, unique]
@@ -194,6 +215,13 @@ models:
   - name: customer_ltv
     description: Closed-form CLV per customer; blends SQL facts with RFM tiers.
     tags: [python]
+    owner: finance-data@example.com
+    team: finance-data
+    business_unit: Finance
+    criticality: tier-2
+    sla:
+      freshness_hours: 48
+      success_rate_target: 0.95
     columns:
       - name: customer_id
         tests: [not_null, unique]

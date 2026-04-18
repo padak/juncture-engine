@@ -512,6 +512,171 @@ def test_api_llm_knowledge_bundles_everything(project_with_history: Path) -> Non
         server.server_close()
 
 
+def test_api_manifest_exposes_governance_and_pii(tmp_path: Path) -> None:
+    """Seeds marked pii propagate a transitive pii flag to descendants."""
+    root = tmp_path / "pii_project"
+    (root / "models").mkdir(parents=True)
+    (root / "seeds").mkdir(parents=True)
+    db_path = root / "out.duckdb"
+    (root / "juncture.yaml").write_text(
+        f"""name: pii_project
+profile: local
+default_schema: main
+connections:
+  local:
+    type: duckdb
+    path: {db_path}
+"""
+    )
+    (root / "seeds" / "raw_customers.csv").write_text("id,email\n1,a@b.c\n")
+    (root / "seeds" / "schema.yml").write_text(
+        """version: 2
+seeds:
+  - name: raw_customers
+    pii: true
+    retention_days: 365
+    source_system: keboola_storage
+"""
+    )
+    (root / "models" / "stg_customers.sql").write_text("SELECT id FROM {{ ref('raw_customers') }}")
+    (root / "models" / "customer_segments.sql").write_text("SELECT id FROM {{ ref('stg_customers') }}")
+    (root / "models" / "schema.yml").write_text(
+        """version: 2
+models:
+  - name: customer_segments
+    owner: analytics@example.com
+    criticality: tier-1
+    sla:
+      freshness_hours: 24
+"""
+    )
+    Runner().run(RunRequest(project_path=root))
+
+    server, host, port = _serve_in_thread(root)
+    try:
+        status, _, body = _get(host, port, "/api/manifest")
+        assert status == 200
+        payload = json.loads(body)
+        by_name = {m["name"]: m for m in payload["models"]}
+        assert by_name["stg_customers"]["pii"] is True
+        assert by_name["customer_segments"]["pii"] is True
+        assert by_name["customer_segments"]["governance"]["criticality"] == "tier-1"
+        assert by_name["customer_segments"]["governance"]["sla_freshness_hours"] == 24
+        # Seed block carries pii + retention too.
+        seed = next(s for s in payload["seeds"] if s["name"] == "raw_customers")
+        assert seed["pii"] is True
+        assert seed["retention_days"] == 365
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_portfolio_aggregates_sla_breach(tmp_path: Path) -> None:
+    """Portfolio attribute math: governance passthrough + freshness breach.
+
+    We synthesise a run_history entry dated 48 h ago so the freshness check
+    has a deterministic breach against the 24 h SLA target.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from juncture.core.run_history import history_path
+
+    root = tmp_path / "pf"
+    (root / "models").mkdir(parents=True)
+    db_path = root / "out.duckdb"
+    (root / "juncture.yaml").write_text(
+        f"""name: pf
+profile: local
+default_schema: main
+connections:
+  local:
+    type: duckdb
+    path: {db_path}
+"""
+    )
+    (root / "models" / "mart.sql").write_text("SELECT 1 AS id")
+    (root / "models" / "schema.yml").write_text(
+        """version: 2
+models:
+  - name: mart
+    owner: a@b.c
+    criticality: tier-1
+    sla:
+      freshness_hours: 24
+      success_rate_target: 0.99
+"""
+    )
+    Runner().run(RunRequest(project_path=root))
+
+    # Overwrite the latest history entry to be 48 h old so the SLA math is deterministic.
+    old_started = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+    hp = history_path(root)
+    records = hp.read_text().splitlines()
+    assert records
+    rec = json.loads(records[-1])
+    rec["started_at"] = old_started
+    hp.write_text("\n".join([*records[:-1], json.dumps(rec)]) + "\n")
+
+    server, host, port = _serve_in_thread(root)
+    try:
+        status, _, body = _get(host, port, "/api/portfolio")
+        assert status == 200
+        payload = json.loads(body)
+        mart = next(m for m in payload["models"] if m["name"] == "mart")
+        assert mart["governance"]["owner"] == "a@b.c"
+        assert mart["governance"]["criticality"] == "tier-1"
+        assert mart["freshness_breach"] is True
+        # Single recorded successful run in a 30-day window means 100%.
+        assert mart["success_rate_30d"] == 1.0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_model_contract_lists_downstream(project_with_history: Path) -> None:
+    server, host, port = _serve_in_thread(project_with_history)
+    try:
+        status, _, body = _get(host, port, "/api/models/stg/contract")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["name"] == "stg"
+        assert "mart" in payload["downstream"]
+        assert payload["downstream"] == payload["would_break"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_model_docs_falls_back_to_sibling_md(tmp_path: Path) -> None:
+    root = tmp_path / "docsproj"
+    (root / "models").mkdir(parents=True)
+    db_path = root / "out.duckdb"
+    (root / "juncture.yaml").write_text(
+        f"""name: docsproj
+profile: local
+default_schema: main
+connections:
+  local:
+    type: duckdb
+    path: {db_path}
+"""
+    )
+    (root / "models" / "mart.sql").write_text("SELECT 1 AS id")
+    (root / "models" / "mart.md").write_text("# mart\n\nBusiness purpose goes here.\n")
+    Runner().run(RunRequest(project_path=root))
+
+    server, host, port = _serve_in_thread(root)
+    try:
+        status, _, body = _get(host, port, "/api/models/mart/docs")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["markdown"].startswith("# mart")
+        assert payload["source"] == "models/mart.md"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_static_directory_traversal_blocked(project_with_history: Path) -> None:
     server, host, port = _serve_in_thread(project_with_history)
     try:

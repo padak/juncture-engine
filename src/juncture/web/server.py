@@ -19,6 +19,10 @@ Routes:
 - ``GET /api/runs/<run_id>`` → the full entry for that run
 - ``GET /api/runs/<run_id>/diagnostics`` → classified statement errors
 - ``GET /api/seeds`` → per-seed metadata (format, inferred types, sentinels)
+- ``GET /api/portfolio`` → model x governance x SLA x last-run aggregation
+- ``GET /api/models/<name>/contract`` → columns + tests + downstream blast radius
+- ``GET /api/models/<name>/docs`` → long-form markdown (docs: field)
+- ``GET /api/reliability`` → 7/30-day SLA attainment + top slow / top failing
 - ``GET /api/llm-knowledge`` → single-shot LLM-friendly snapshot of the project
 - ``GET /api/project`` → project name + config snapshot
 - ``GET /api/project/config`` → full ``juncture.yaml`` parsed shape
@@ -116,8 +120,18 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                     self._send_json(self._manifest_openlineage_payload())
                 elif path == "/api/seeds":
                     self._send_json(self._seeds_payload())
+                elif path == "/api/portfolio":
+                    self._send_json(self._portfolio_payload())
+                elif path == "/api/reliability":
+                    self._send_json(self._reliability_payload())
                 elif path == "/api/llm-knowledge":
                     self._send_json(self._llm_knowledge_payload())
+                elif path.startswith("/api/models/") and path.endswith("/contract"):
+                    name = unquote(path[len("/api/models/") : -len("/contract")])
+                    self._send_json(self._model_contract_payload(name))
+                elif path.startswith("/api/models/") and path.endswith("/docs"):
+                    name = unquote(path[len("/api/models/") : -len("/docs")])
+                    self._send_json(self._model_docs_payload(name))
                 elif path.startswith("/api/models/") and path.endswith("/history"):
                     name = unquote(path[len("/api/models/") : -len("/history")])
                     query = parse_qs(parsed.query or "")
@@ -162,6 +176,13 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
         def _manifest_payload(self) -> dict[str, Any]:
             project = Project.load(project_path)
             dag = project.dag()
+            # Precompute PII set so the UI can propagate a ring from seed to descendants.
+            pii_seeds = {s.name for s in project.seeds if s.pii}
+            pii_transitive: set[str] = set(pii_seeds)
+            for name in dag.topological_order():
+                parents = dag.upstream(name)
+                if pii_transitive & set(parents):
+                    pii_transitive.add(name)
             return {
                 "project": project.config.name,
                 "models": [
@@ -175,8 +196,21 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                         "description": m.description,
                         "schedule_cron": m.schedule_cron,
                         "path": _relative_path(m, project.root),
+                        "governance": _governance_payload(m),
+                        "pii": m.name in pii_transitive,
                     }
                     for m in dag.models()
+                ],
+                "seeds": [
+                    {
+                        "name": s.name,
+                        "pii": s.pii,
+                        "retention_days": s.retention_days,
+                        "source_system": s.source_system,
+                        "source_locator": s.source_locator,
+                        "owner": s.owner,
+                    }
+                    for s in project.seeds
                 ],
                 "order": dag.topological_order(),
                 "edges": [{"from": src, "to": tgt} for src in dag.nodes for tgt in dag.downstream(src)],
@@ -327,6 +361,7 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                 "sql": sql_body,
                 "sql_rendered": sql_rendered,
                 "python_source": python_source,
+                "governance": _governance_payload(model),
             }
 
         def _runs_payload(self, *, limit: int) -> dict[str, Any]:
@@ -434,6 +469,170 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                 "success_rate_30d": _success_rate(recent_30d),
                 "sample_size_30d": len(recent_30d),
             }
+
+        def _portfolio_payload(self) -> dict[str, Any]:
+            """Model x governance x last-run x 30-day SLA attainment.
+
+            Used by the CDO Portfolio tab. Pure aggregation over
+            ``run_history.jsonl`` + ``schema.yml`` governance — no DB
+            hits, so a 300-model project renders in one manifest load.
+            """
+            from datetime import UTC, datetime
+
+            project = Project.load(project_path)
+            entries = read_runs(project_path)
+            now = datetime.now(UTC)
+            latest = entries[0] if entries else None
+            latest_by_model: dict[str, dict[str, Any]] = {}
+            if latest:
+                for m in latest.models:
+                    latest_by_model[m["name"]] = m
+
+            rows: list[dict[str, Any]] = []
+            for model in project.models:
+                last = latest_by_model.get(model.name)
+                thirty = _runs_in_last_days(entries, 30, model.name)
+                success_30d = _success_rate(thirty)
+                # Freshness breach: hours since last successful run > target.
+                last_success_age_hours: float | None = None
+                for e in entries:
+                    for mm in e.models:
+                        if mm.get("name") == model.name and mm.get("status") == "success":
+                            try:
+                                last_success_age_hours = (
+                                    now - datetime.fromisoformat(e.started_at)
+                                ).total_seconds() / 3600.0
+                            except ValueError:
+                                last_success_age_hours = None
+                            break
+                    if last_success_age_hours is not None:
+                        break
+                freshness_breach = (
+                    model.sla_freshness_hours is not None
+                    and last_success_age_hours is not None
+                    and last_success_age_hours > model.sla_freshness_hours
+                )
+                success_breach = (
+                    model.sla_success_rate_target is not None
+                    and success_30d is not None
+                    and success_30d < model.sla_success_rate_target
+                )
+                rows.append(
+                    {
+                        "name": model.name,
+                        "kind": model.kind.value,
+                        "materialization": model.materialization.value,
+                        "governance": _governance_payload(model),
+                        "last_status": last["status"] if last else None,
+                        "last_elapsed_seconds": last["elapsed_seconds"] if last else None,
+                        "last_started_at": latest.started_at if latest and last else None,
+                        "last_success_age_hours": last_success_age_hours,
+                        "success_rate_30d": success_30d,
+                        "sample_30d": len(thirty),
+                        "freshness_breach": bool(freshness_breach),
+                        "success_breach": bool(success_breach),
+                    }
+                )
+            return {"models": rows, "total": len(rows)}
+
+        def _reliability_payload(self) -> dict[str, Any]:
+            """Portfolio-wide reliability dashboard (RFC §5.3 P2.6)."""
+            from datetime import UTC, datetime, timedelta
+
+            project = Project.load(project_path)
+            entries = read_runs(project_path)
+            now = datetime.now(UTC)
+            windows = {"7d": 7, "30d": 30}
+            tiers: dict[str, dict[str, dict[str, int]]] = {w: {} for w in windows}
+            slowest: list[dict[str, Any]] = []
+            failure_buckets: dict[str, int] = {}
+
+            for model in project.models:
+                tier = model.criticality or "untagged"
+                per_model = _runs_in_last_days(entries, 30, model.name)
+                p95 = _percentile([m["elapsed_seconds"] for m in per_model if m.get("elapsed_seconds")], 0.95)
+                if p95 is not None:
+                    slowest.append({"name": model.name, "p95_elapsed_seconds": p95, "tier": tier})
+                for window, days in windows.items():
+                    bucket = tiers[window].setdefault(tier, {"ok": 0, "total": 0})
+                    for m in per_model:
+                        try:
+                            started = datetime.fromisoformat(entries[0].started_at)
+                        except (ValueError, IndexError):
+                            continue
+                        if started < now - timedelta(days=days):
+                            continue
+                        bucket["total"] += 1
+                        if m.get("status") == "success":
+                            bucket["ok"] += 1
+
+            for e in entries[:30]:
+                for m in e.models:
+                    for se in m.get("statement_errors") or []:
+                        cls = classify_statement_errors([se.get("error", "")])[0]
+                        failure_buckets[cls.bucket.value] = failure_buckets.get(cls.bucket.value, 0) + 1
+
+            slowest.sort(key=lambda x: x["p95_elapsed_seconds"] or 0, reverse=True)
+            return {
+                "tiers": {
+                    window: {
+                        tier: {
+                            "attainment": (data["ok"] / data["total"]) if data["total"] else None,
+                            "sample": data["total"],
+                        }
+                        for tier, data in per_tier.items()
+                    }
+                    for window, per_tier in tiers.items()
+                },
+                "slowest": slowest[:10],
+                "failure_buckets": failure_buckets,
+            }
+
+        def _model_contract_payload(self, name: str) -> dict[str, Any]:
+            """Per-model contract view: columns x tests + downstream blast radius."""
+            project = Project.load(project_path)
+            model = next((m for m in project.models if m.name == name), None)
+            if model is None:
+                raise FileNotFoundError(name)
+            dag = project.dag()
+            downstream = sorted(dag.downstream(name))
+            return {
+                "name": model.name,
+                "columns": [
+                    {
+                        "name": c.name,
+                        "description": c.description,
+                        "data_type": c.data_type,
+                        "tests": list(c.tests),
+                    }
+                    for c in model.columns
+                ],
+                "downstream": downstream,  # models that ref() this one
+                "would_break": downstream,  # blast radius == direct+transitive below
+            }
+
+        def _model_docs_payload(self, name: str) -> dict[str, Any]:
+            """Long-form markdown for the Metadata tab.
+
+            Source of truth (first hit wins): ``docs:`` in schema.yml →
+            ``<model_name>.md`` next to the SQL file → no docs.
+            """
+            project = Project.load(project_path)
+            model = next((m for m in project.models if m.name == name), None)
+            if model is None:
+                raise FileNotFoundError(name)
+            if model.docs:
+                doc_path = project.root / model.docs
+                if doc_path.is_file():
+                    return {
+                        "source": str(doc_path.relative_to(project.root)),
+                        "markdown": doc_path.read_text(),
+                    }
+            if model.path:
+                sibling = model.path.with_suffix(".md")
+                if sibling.is_file():
+                    return {"source": str(sibling.relative_to(project.root)), "markdown": sibling.read_text()}
+            return {"source": None, "markdown": None}
 
         def _llm_knowledge_payload(self) -> dict[str, Any]:
             """Single-shot project snapshot shaped for LLM ingestion.
@@ -583,6 +782,20 @@ def _make_handler(project_path: Path) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(body)
 
     return JunctureHandler
+
+
+def _governance_payload(model: Model) -> dict[str, Any]:
+    """Serialise the optional M4 governance fields of a Model."""
+    return {
+        "owner": model.owner,
+        "team": model.team,
+        "business_unit": model.business_unit,
+        "criticality": model.criticality,
+        "sla_freshness_hours": model.sla_freshness_hours,
+        "sla_success_rate_target": model.sla_success_rate_target,
+        "docs": model.docs,
+        "consumers": list(model.consumers),
+    }
 
 
 def _relative_path(model: Model, root: Path) -> str | None:

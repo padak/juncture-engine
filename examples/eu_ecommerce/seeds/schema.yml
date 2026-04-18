@@ -1,0 +1,26 @@
+version: 2
+
+seeds:
+  - name: customers
+    source_system: keboola_storage
+    source_locator: in.c-crm.customers
+    pii: true
+    retention_days: 365
+    owner: data-platform@example.com
+
+  - name: orders
+    source_system: keboola_storage
+    source_locator: in.c-ops.orders
+    retention_days: 2555   # 7 years, accounting retention
+    owner: finance-data@example.com
+
+  - name: order_items
+    source_system: keboola_storage
+    source_locator: in.c-ops.order_items
+    retention_days: 2555
+
+  - name: web_sessions
+    source_system: s3
+    source_locator: s3://warehouse-raw/web_sessions/
+    pii: true               # session cookies join to user_id downstream
+    retention_days: 90
