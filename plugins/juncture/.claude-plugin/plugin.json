@@ -1,0 +1,12 @@
+{
+  "name": "juncture",
+  "version": "0.1.0",
+  "description": "Author, run, debug, and migrate Juncture data transformation projects — multi-backend SQL + Python engine (DuckDB-native locally, Snowflake/BigQuery/Postgres in production via SQLGlot). Teaches Claude the full project lifecycle, all five materializations, the migration repair loop, profile-based environments, the YAML schema, and a troubleshooting recipe book.",
+  "author": {
+    "name": "Petr Simecek",
+    "email": "petr@keboola.com"
+  },
+  "homepage": "https://github.com/padak/juncture-engine",
+  "repository": "https://github.com/padak/juncture-engine",
+  "license": "Apache-2.0"
+}
