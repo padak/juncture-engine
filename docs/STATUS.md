@@ -3,7 +3,7 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `feat/web-v2-compliance` · **M4 PR2 (governance UI) in flight**; M1-M3 + M4 PR1 merged (#8, #9, #10, #11).
+> **Last updated:** 2026-04-18 · branch `main` · **Web UI v2 (RFC 0001) shipped end-to-end** — M1-M4 merged (#8-#12) + sidebar polish (#13).
 
 ## Point: co a proč děláme
 
@@ -144,7 +144,9 @@ druhý.
 | M1 — P0 "readable" | `feat/web-v2-readable` | **merged (#8)** — source viewer + kind/status split + clickable Runs drawer + tests panel |
 | M2 — P1 overview + search + export | `feat/web-v2-overview` | **merged (#9)** — Project tab (juncture.yaml + README + git) + DAG search + manifest/OpenLineage download |
 | M3 — P1 diagnostics + seeds + reliability | `feat/web-v2-diagnostics` | **merged (#10)** — Seeds tab + Diagnostics bucket panel + reliability sparkline + LLM knowledge download |
-| M4 — P2 governance | `feat/web-v2-governance` (merged #11) + `feat/web-v2-compliance` | **v letu (PR2/2)** — Portfolio + Reliability tabs, PII ring propagation v DAGu, contract endpoint, long-form docs |
+| M4 — P2 governance (PR1/2: schema) | `feat/web-v2-governance` | **merged (#11)** — `schema.yml` + seeds gain owner/SLA/docs/consumers + pii/retention/source_system |
+| M4 — P2 governance (PR2/2: UI) | `feat/web-v2-compliance` | **merged (#12)** — Portfolio + Reliability tabs, PII ring propagation v DAGu, contract endpoint, long-form docs |
+| Follow-up — sidebar polish | `feat/web-v2-sidebar-polish` | **merged (#13)** — card-based Metadata layout, collapsible Legend, sticky Detail tabs, export popover |
 
 ## Risks / open questions
 

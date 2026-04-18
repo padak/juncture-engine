@@ -1,7 +1,24 @@
 # RFC 0001 — Web UI v2
 
-*Status: proposed · 2026-04-18 · supersedes the minimum viable web
-render shipped in PR #5 (commit `6d80db9`).*
+*Status: **implemented** · 2026-04-18 · supersedes the minimum viable
+web render shipped in PR #5 (commit `6d80db9`).*
+
+Rolled out in six squash merges to `main`:
+
+| PR | Milestone | Scope |
+|---|---|---|
+| #8 | M1 — P0 readable | Source viewer, kind-vs-status split, clickable Runs drawer, tests panel |
+| #9 | M2 — P1 overview + search + export | Project tab, DAG fulltext search, manifest / OpenLineage download |
+| #10 | M3 — P1 diagnostics + seeds + reliability | Seeds tab, diagnostics bucket panel, reliability sparkline, bonus LLM knowledge export |
+| #11 | M4 PR1 — schema | `schema.yml` + seed governance fields (owner / SLA / docs / consumers / pii / retention) |
+| #12 | M4 PR2 — governance UI | Portfolio + Reliability tabs, PII ring propagation, contract + docs endpoints |
+| #13 | Follow-up polish | Card-based Metadata layout, collapsible Legend, sticky Detail tabs, export popover |
+
+Open questions §12 were resolved with the RFC's proposed defaults:
+structured `consumers` with bare-string back-compat, git fallback on
+the Keboola Docker wrapper, `markdown-it` with its default sanitiser,
+server wall clock for SLA freshness, portfolio JSON-copy over CSV
+export for now.
 
 ## 1. Motivation
 
