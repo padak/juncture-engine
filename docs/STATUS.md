@@ -3,119 +3,134 @@
 > Živý dokument. Aktualizuj po každé dokončené fázi / významném commitu.
 > Psáno česky pro Petra. Kód, API, commity a ostatní docs zůstávají v angličtině.
 >
-> **Last updated:** 2026-04-18 · branch `phase-3-slevomat-migration` · commit `HEAD` (po Phase 3c — parallel EXECUTE).
+> **Last updated:** 2026-04-18 · branch `phase-3-slevomat-migration` · commit `b186606`.
 
 ## Point: co a proč děláme
 
-Nahrazujeme čtyři Keboola transformační komponenty (`snowflake-`, `python-`,
-`duckdb-`, `dbt-transformation`) jedním enginem — **Juncture**. Hlavní důvod:
-dnes nemluví komponenty mezi sebou, kód nežije v gitu, mix SQL + Python je
-nemožný, paralelismus je ruční. Juncture sjednocuje všechno do jednoho DAGu
-(SQL + Python), běží lokálně proti DuckDB, je agent-friendly a v produkci
-cílí na Snowflake / BigQuery / Postgres přes SQLGlot translaci.
+Juncture je multi-backend SQL + Python transformační engine, který nahrazuje čtyři
+legacy Keboola komponenty jedním enginem (SQL + Python v jednom DAGu, lokálně přes
+DuckDB, v produkci přes SQLGlot translaci na Snowflake/BigQuery/Postgres). Motivaci
+a dlouhodobý cíl viz [`VISION.md`](VISION.md); sekvenci fází, jak to dodáváme,
+viz [`STRATEGY.md`](STRATEGY.md).
 
-Motivaci a historii viz [`RESEARCH.md`](RESEARCH.md), architekturu
-[`DESIGN.md`](DESIGN.md), fázovaný plán [`ROADMAP.md`](ROADMAP.md).
+## Kde jsme ve fázích
 
-## Kde jsme
+**Fáze 1 — DuckDB-first + web render + E2E proof** (viz
+[`STRATEGY.md`](STRATEGY.md)). **Jsme uvnitř Phase 1.** Done-done kritérium: nový
+uživatel naklonuje repo, načte reálnou Keboola transformaci přes
+`juncture migrate-sync-pull`, spustí ji lokálně proti DuckDB, a v prohlížeči na
+`localhost:N` vidí DAG + run history projektu. **Engine část je zavřená, pilotní
+migrace E2E prošla; chybí `continue-on-error` + schema-aware translate + web
+render.** Web render je závazná brána do Phase 2.
 
-**Fáze 1 — MVP (v0.1):** ✓ hotová. Initial commit `04eaac5`.
-**Fáze 2 — ergonomie (v0.2):** ✓ ve velkém hotová (seedy, Jinja, env vars,
-custom SQL testy, incremental state store, env var interpolation, migration
-helper). Pár položek z `ROADMAP.md` ještě čeká — viz sekce v0.2 tam.
-**Fáze 3 — Slevomat E2E migrace:** rozběhnutá, **ještě nedoběhla end-to-end**.
+## Engine capabilities shipped
 
-### Co přibylo na Phase 3 branchi (commity nad `04eaac5`)
+Commity na `phase-3-slevomat-migration` nad MVP basline `04eaac5`:
 
 | Commit | Věc |
 |---|---|
 | `239d5c3` | parquet seed loader + quoted identifiers v DuckDB adapteru |
-| `75d7134` | `EXECUTE` materializace (multi-statement SQL as-is) + sync-pull migrator |
+| `75d7134` | `EXECUTE` materializace (multi-statement SQL as-is) + `sync-pull` migrator |
 | `6f18b0f` | `_discover_seeds` následuje symlinkované adresáře (`os.walk(followlinks=True)`) |
 | `44d2f6a` | parquet seedy jako VIEW (ne TABLE) + DuckDB `memory_limit` / `temp_directory` |
 | `cfbc5ee` | hybridní type inference (full-scan < 1 M řádků, sample nad 1 M) |
 | `0e76ff7` | paralelní seed loading přes `ThreadPoolExecutor` |
-| `4fc601d` | CASE type harmonization Snowflake→DuckDB + `juncture sanitize` CLI (řeší VARCHAR/INT blocker) |
+| `5dc2485` | `scripts/analyze_execute.py` — intra-script dependency DAG nástroj |
+| `4fc601d` | `harmonize_case_types` AST pass + `juncture sanitize` CLI (odblokuje VARCHAR/INT v CASE) |
 | `a300e37` | `StatementNode` + `build_statement_dag` — intra-script DAG API v parseru |
 | `840fd1e` | **Parallel EXECUTE** — `config.parallelism: N` iteruje vrstvy přes `ThreadPoolExecutor` |
-| `8637137` | **Dry-run** — `juncture run --dry-run` ukáže plán (model layers + intra-EXECUTE vrstvy) bez otevření DB |
-| _HEAD_ | **split-execute** — `juncture split-execute` rozloží monolit na mini-modely s auto-inferovanými `ref()` |
+| `8637137` | **Dry-run** — `juncture run --dry-run` ukáže plán bez otevření DB |
+| `017b920` | `--reuse-seeds` přeskočí re-inference a re-materializaci seedů |
+| `2256c3f` | `juncture split-execute` rozloží EXECUTE monolit na mini-modely s auto-inferovanými `ref()` |
+| `e7ced30` | lepší YAMLError hint v `schema.yml` loaderu |
+| `499ab5d` | `--dry-run` už nemíchá seedy do vrstev modelů |
+| `540194d` | `--parallelism / -P` override na CLI pro benchmark runy |
+| `b186606` | `juncture compile --dot <file>` exportuje DAG jako Graphviz DOT |
 
-### Infrastruktura
+Architekturu viz [`DESIGN.md`](DESIGN.md); detailní task list viz
+[`ROADMAP.md`](ROADMAP.md).
 
-- DigitalOcean droplet 4 vCPU / 32 GB RAM, IP `159.65.220.209`, volume
-  `/mnt/volume_nyc1_juncture/juncture-data/slevomat-project/`.
-- Nainstalováno `kbagent` + `juncture` (editable install).
-- Read-only Storage API token pro Slevomat, ~22 GB parquet dat,
-  208 tabulek jako symlinkované seedy.
+## Pilot migration — real-world test
 
-## Reálný test case: Slevomat migrace
+Produkční Keboola transformace jednoho reálného klienta jako forcing function pro
+parquet seedy, EXECUTE materializaci a type inference.
 
-- Vstup: `main/transformation/keboola.snowflake-transformation/<name>/`
-  layout z `kbagent sync pull`.
-- Migrovaný script: **`slevomat_main_task.sql`**, 673 řádků, 374 statementů.
-- Sync-pull migrator vygeneroval `juncture.yaml`, `seeds/` (symlinks na
-  parquet) a `models/<name>.sql` s `EXECUTE` materializací.
-- **SQLGlot:** 374/374 statementů Snowflake → DuckDB přeloženo bez chyb.
-- **Seedy:** 208 parquet adresářů loadnuto (paralelně, ~45 min → zrychleno
-  na ~cca 10 min po `ThreadPoolExecutor`).
-- **Executor blocker:** VARCHAR vs `INTEGER_LITERAL` v `CASE` výrazech.
-  Slevomat drží vše v Storage jako VARCHAR, takže DuckDB CAST je nutný.
-  Commit `cfbc5ee` zavádí hybridní type inference — **ověření na
-  Slevomatu ještě neproběhlo** (předchozí session končila na API 529 /
-  prompt-too-long).
+- **Vstup:** `kbagent sync pull` layout, **374 Snowflake SQL statementů**,
+  **208 parquet seedů** (~22 GB).
+- **Výsledek: 100 % úspěch** — všech 374 statementů běží E2E proti DuckDB.
+  K tomu bodu vedlo **26 iterací agent-driven repair**; playbook, taxonomie chyb
+  a plán, jak to příště zkrátit na 2–3 iterace, je v
+  [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md).
+- **Artefakty na test serveru** (DO droplet 4 vCPU / 32 GB, volume
+  `/mnt/volume_nyc1_juncture/juncture-data/`): původní migrovaný projekt
+  s jedním `EXECUTE` monolitem a paralelně **311-modelový `split-execute`
+  derivát** určený pro DAG-level paralelní benchmark. (Dva adresáře vedle sebe
+  si drží historické jméno z interního trackingu — cesty jsou v ops poznámkách,
+  ne tady.)
+- **Benchmark scénáře S1–S5** (sekvenční baseline, parallel EXECUTE {2, 4, 8},
+  split-execute DAG s `--threads N`) jsou rozepsané v
+  [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §9 operational checklist; čísla
+  poputují do [`BENCHMARKS.md`](BENCHMARKS.md).
 
-## Co zbývá dodělat
+## Current sprint: Post-pilot hardening
 
-### Bezprostředně (dokončit Phase 3)
+Z pilotu vypadlo devět konkrétních Juncture featur ve dvou sprintech (A a B).
+Priority jsou z [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8:
 
-- [ ] Dotáhnout Slevomat E2E — typové chyby v původním SQL řešíme
-      manuálně přes Sonet agenty (není to problém Juncture).
-- [ ] Změřit **sekvenční baseline** vs **parallel EXECUTE** na Slevomatu
-      — různé hodnoty `parallelism` (1, 2, 4, 8) → `BENCHMARKS.md`.
-- [ ] Rozhodnout, jestli potřebujeme **Cestu B (split monolitu na
-      mini-modely)** na základě reálného zisku z Cesty C.
-- [ ] Nahlásit / opravit OOM v kbagent (z Phase 3 kick-off).
+| Priorita | Feature | Kde | Velikost |
+|---|---|---|---|
+| **P0** | `juncture run --continue-on-error` na EXECUTE | `duckdb_adapter._execute_raw` | ~20 LOC |
+| **P0** | Schema-aware `translate_sql(schema=...)` — `annotate_types` + `harmonize_binary_ops` / `harmonize_function_args` | `sqlglot_parser.translate_sql` | ~200 LOC |
+| **P1** | Sentinel detector v `type_inference` | `core.type_inference.infer_parquet_types` | ~100 LOC |
+| **P1** | Error classifier (`juncture.diagnostics.classify_error`) | `juncture.diagnostics` (nový modul) | ~150 LOC |
+| **P1** | `migrate-sync-pull --validate` — pre-flight report | `cli/app.py` + runner dry-run | ~80 LOC |
+| **P2** | Statement dependency DAG filter na cascade errory | re-use `build_statement_dag` | ~50 LOC |
+| **P2** | `juncture repair --max-iterations N` orchestrátor | nový subcommand | ~300 LOC |
+| **P3** | Fix race condition intra-script paralelního EXECUTE (dnes nutí `parallelism: 1` na migrovaných bodies — blokuje jeden benchmark scénář) | `duckdb_adapter` | TBD |
 
-### Phase 2 / v0.2 — zbývající položky
+## Phase 1 gate — still open
 
-- [ ] **Model selectors** rozšířit o `path:marts/`, `state:modified+`.
-- [ ] **Unit testy modelů** (input → expected output v YAML).
-- [ ] **`juncture docs --serve`** — statický HTML s DAG + sloupci (minimální
-      React site v roadmapě).
-- [ ] **Structured logging** (JSON mode pro ingestion).
-- [ ] **pre-commit hooks** — ruff, mypy, schema.yml lint.
+Z [`STRATEGY.md`](STRATEGY.md) Phase 1 zbývají tyto unchecked deliverables,
+než půjdeme na Phase 2:
 
-### Phase 4 — "real backends" (v0.3)
+- [ ] **Continue-on-error + diagnostics** (Sprint A z
+      [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8 — P0/P1 výše).
+- [ ] **Schema-aware `translate_sql`** — feed `Project.seed_schemas()` do
+      SQLGlot `annotate_types`; `harmonize_binary_ops` vloží `TRY_CAST` kolem
+      VARCHAR operandů (Sprint B).
+- [ ] **Sentinel detector** v `type_inference` — per-column sentinel profily →
+      `CAST(col AS INT)` se expanduje na
+      `TRY_CAST(NULLIF(col, sentinel) AS BIGINT)` automaticky.
+- [ ] **Intra-script parallel EXECUTE race fix** (P3 výše).
+- [ ] **Web render** — malý Python HTTP server (`juncture docs --serve` nebo
+      ekvivalent) renderuje compiled DAG, per-model schema a run history
+      z manifestu. **Závazná brána Phase 1 → Phase 2.** V kódu zatím není.
+- [ ] Pilot-migration benchmark čísla zaznamenaná v
+      [`BENCHMARKS.md`](BENCHMARKS.md).
 
-- [ ] Snowflake adapter — MERGE incrementals, Arrow fetch, CLUSTER BY.
-- [ ] BigQuery adapter — partitioning, clustering, external tables.
-- [ ] Postgres adapter — ON CONFLICT pro incrementals.
-- [ ] Dialect guard: detekce inkompatibilních funkcí při compile.
-- [ ] Connection-agnostic testy (DuckDB lokálně = Snowflake v produkci).
+## Risks / open questions
 
-### Phase 5 — "Keboola integration" (v0.4)
+- **Split-execute vs monolith EXECUTE performance tradeoff.** TBD — čeká na
+  čísla z pilot-migration benchmarků (S1–S5). Bez nich nevíme, jestli doporučit
+  `split-execute` jako default pro migrované projekty, nebo ho nechat jako
+  opt-in pro DAG-level paralelismus.
+- **Intra-script parallel EXECUTE race condition (P3).** Dnes nuceně
+  `parallelism: 1` na migrovaných bodies — blokuje jeden z benchmark scénářů.
+- **kbagent OOM bug** reported proti
+  <https://github.com/padak/keboola_agent_cli>. Nevlastní Juncture, ale limituje
+  migrace dostatečně velkých projektů.
+- **Web render not started.** Binding gate Phase 1 → Phase 2 leží na zelené
+  louce; dokud neproběhne, nezačínáme na Snowflake/BigQuery/Postgres adaptérech.
 
-- [ ] Keboola component Docker image s reálným SAPI uploadem (teď jen stub).
-- [ ] Auto-generate `juncture.yaml` z Keboola config na straně wrappera.
-- [ ] Dev/prod branch support — Keboola branches → separate schemas.
-- [ ] OpenLineage eventy napojené na Keboola Lineage.
-- [ ] Job artifacts — každý run uploaduje `manifest.json` + logy.
+## Co NENÍ teď priorita
 
-### Web UI / render
+Záměrně odložené až za Phase 1 gate (mirroring [`STRATEGY.md`](STRATEGY.md)
+Phase 2 a dál):
 
-- Zvažovaný "webový render CLI" (malý Python server pro vizualizaci DAGu /
-  cfg) zmíněný jako Phase 1/2 cíl — v commitech zatím **nenalezen**.
-  Rozhodnout: potřebujeme to, nebo to spadne do `juncture docs --serve`?
-
-## Poznámka k demo scénáři
-
-Cílový flow pro prezentaci:
-1. `juncture migrate-keboola-sync-pull ...` na Slevomat repozitáři.
-2. `juncture run --project /tmp/slevomat` (DuckDB, lokálně).
-3. `juncture test`.
-4. Přehodit `connection: snowflake` v `juncture.yaml` a spustit totéž
-   v Keboole přes Docker wrapper.
-
-Kde je nejbližší blocker: bod 2 (VARCHAR/INT CASE). Jakmile spadne, flow
-prochází end-to-end.
+- Snowflake / BigQuery / Postgres adaptéry (Phase 2 — až po web renderu).
+- Produkce Keboola component wrapperu — real SAPI upload, branch mapping,
+  OpenLineage napojení (Phase 2).
+- MCP server jako shipping produkt (Phase 3) — skeleton už existuje
+  v `juncture.mcp.server`, ale dokud nebude API freeze, nešpekujeme.
+- v2.0 differentiators — virtual data environments, semantic layer, AI dialect
+  arbitrage, agentic authoring (Phase 4).

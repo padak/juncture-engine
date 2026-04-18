@@ -389,7 +389,7 @@ def split_statements(sql: str) -> list[str]:
 # quoted identifiers with dots (``"in.c-db.carts"``) and dashes (``"oz-provize"``)
 # that migrated Snowflake scripts routinely use.
 _CREATE_OUT_RE = re.compile(
-    r'^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?'
+    r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?"
     r'(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([A-Za-z0-9_.\-]+)"?',
     re.IGNORECASE,
 )

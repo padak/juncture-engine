@@ -193,7 +193,8 @@ class Runner:
         # layer computation; seeds are already reported via plan.seeds.
         by_name: dict[str, Model] = {m.name: m for m in project.models}
         model_names = {
-            name for name in dag.nodes
+            name
+            for name in dag.nodes
             if (m := by_name.get(name)) is not None and m.kind is not ModelKind.SEED
         }
         model_dag = dag.subgraph(model_names) if model_names else dag
@@ -213,7 +214,8 @@ class Runner:
                         # Strip seed names from depends_on for readability —
                         # the seed list is already shown separately.
                         depends_on=sorted(
-                            d for d in model.depends_on
+                            d
+                            for d in model.depends_on
                             if (dm := by_name.get(d)) is None or dm.kind is not ModelKind.SEED
                         ),
                         layer=layer_idx + 1,

@@ -132,7 +132,7 @@ model:
 ```yaml
 # models/schema.yml
 models:
-  - name: slevomat_main_task
+  - name: main_task
     materialization: execute
     config:
       parallelism: 4

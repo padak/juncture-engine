@@ -84,10 +84,7 @@ class TestRefRewriting:
 
 class TestResidual:
     def test_insert_goes_to_residual(self) -> None:
-        sql = (
-            "CREATE TABLE a AS SELECT 1 AS x;"
-            "INSERT INTO a VALUES (2)"
-        )
+        sql = "CREATE TABLE a AS SELECT 1 AS x;INSERT INTO a VALUES (2)"
         result = split_execute_script(sql)
         assert [m.name for m in result.models] == ["a"]
         assert result.residual is not None
@@ -105,20 +102,13 @@ class TestResidual:
         assert set(result.residual_depends_on) == {"src", "other"}
 
     def test_residual_ignores_external_refs(self) -> None:
-        sql = (
-            "CREATE TABLE built AS SELECT 1 AS x;"
-            "UPDATE external_t SET x = (SELECT x FROM built)"
-        )
+        sql = "CREATE TABLE built AS SELECT 1 AS x;UPDATE external_t SET x = (SELECT x FROM built)"
         result = split_execute_script(sql)
         # external_t is not produced in-script → not in depends_on.
         assert result.residual_depends_on == ["built"]
 
     def test_drop_set_use_all_residual(self) -> None:
-        sql = (
-            "SET memory_limit = '4GB';"
-            "CREATE TABLE a AS SELECT 1;"
-            "DROP TABLE IF EXISTS old_t"
-        )
+        sql = "SET memory_limit = '4GB';CREATE TABLE a AS SELECT 1;DROP TABLE IF EXISTS old_t"
         result = split_execute_script(sql)
         assert [m.name for m in result.models] == ["a"]
         assert result.residual is not None
@@ -133,10 +123,7 @@ class TestEdgeCases:
         assert "SELECT 1" in result.models[0].body
 
     def test_duplicate_ctas_raises(self) -> None:
-        sql = (
-            "CREATE OR REPLACE TABLE t AS SELECT 1;"
-            "CREATE OR REPLACE TABLE t AS SELECT 2"
-        )
+        sql = "CREATE OR REPLACE TABLE t AS SELECT 1;CREATE OR REPLACE TABLE t AS SELECT 2"
         with pytest.raises(SplitExecuteError, match="appears more than once"):
             split_execute_script(sql)
 
@@ -153,7 +140,7 @@ class TestEdgeCases:
         assert "MERGE INTO tgt" in result.residual
 
     def test_quoted_identifier_with_dot(self) -> None:
-        # Slevomat-style "out.campaigns" must survive round-trip:
+        # Keboola-style "out.campaigns" must survive round-trip:
         # both the model name and the ref() substitution use the bare form.
         sql = (
             'CREATE TABLE "out.campaigns" AS SELECT 1 AS x;'

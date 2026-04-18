@@ -37,7 +37,7 @@ class TestDetectOutputTable:
         assert detect_output_table("INSERT OR REPLACE INTO orders VALUES (1)") == "orders"
 
     def test_quoted_identifier_with_dot(self) -> None:
-        # Slevomat-style identifiers: Storage-bucket-prefixed names like
+        # Keboola Storage-bucket-prefixed identifiers like
         # "in.c-db.carts" must round-trip through both detection and
         # extract_table_references so downstream reads match.
         assert detect_output_table('CREATE TABLE "in.c-db.carts" AS SELECT 1') == "in.c-db.carts"
@@ -89,11 +89,7 @@ class TestBuildStatementDag:
         assert [sorted(layer) for layer in layers] == [[0], [1], [2]]
 
     def test_independent_statements_share_layer(self) -> None:
-        sql = (
-            "CREATE TABLE a AS SELECT 1;"
-            "CREATE TABLE b AS SELECT 2;"
-            "CREATE TABLE c AS SELECT 3;"
-        )
+        sql = "CREATE TABLE a AS SELECT 1;CREATE TABLE b AS SELECT 2;CREATE TABLE c AS SELECT 3;"
         g = build_statement_dag(sql)
         assert g.number_of_edges() == 0
         layers = list(nx.topological_generations(g))
@@ -103,10 +99,7 @@ class TestBuildStatementDag:
     def test_external_table_is_root(self) -> None:
         # ``orders`` is never produced inside the script — it's a seed/source.
         # The second statement has it as input but gets no intra-script edge.
-        sql = (
-            "CREATE TABLE stg AS SELECT * FROM orders;"
-            "CREATE TABLE fact AS SELECT * FROM stg;"
-        )
+        sql = "CREATE TABLE stg AS SELECT * FROM orders;CREATE TABLE fact AS SELECT * FROM stg;"
         g = build_statement_dag(sql)
         assert list(g.edges()) == [(0, 1)]
         layers = list(nx.topological_generations(g))

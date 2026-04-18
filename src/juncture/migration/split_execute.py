@@ -111,9 +111,7 @@ def split_execute_script(sql: str, *, dialect: str = "duckdb") -> SplitResult:
                 residual_depends |= _refs_in(parsed) & produced_in_script
                 continue
             kind = (parsed.args.get("kind") or "TABLE").upper()
-            rewritten = _rewrite_refs(
-                body, produced_in_script=produced_in_script, dialect=dialect
-            )
+            rewritten = _rewrite_refs(body, produced_in_script=produced_in_script, dialect=dialect)
             models.append(
                 SplitModel(
                     name=out,

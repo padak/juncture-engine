@@ -75,18 +75,14 @@ def test_parallelism_cli_override_wins_over_schema(tmp_path: Path) -> None:
     # schema.yml says parallelism=2, but the CLI --parallelism=8 override
     # takes precedence. Plan reflects 8, not 2.
     project = _scaffold_execute(tmp_path, parallelism=2)
-    plan = Runner().plan(
-        RunRequest(project_path=project, parallelism_override=8)
-    )
+    plan = Runner().plan(RunRequest(project_path=project, parallelism_override=8))
     assert plan.models[0].intra is not None
     assert plan.models[0].intra.parallelism == 8
 
 
 def test_parallelism_override_none_keeps_schema_value(tmp_path: Path) -> None:
     project = _scaffold_execute(tmp_path, parallelism=3)
-    plan = Runner().plan(
-        RunRequest(project_path=project, parallelism_override=None)
-    )
+    plan = Runner().plan(RunRequest(project_path=project, parallelism_override=None))
     assert plan.models[0].intra is not None
     assert plan.models[0].intra.parallelism == 3
 
@@ -122,9 +118,8 @@ connections:
 def test_dry_run_separates_seeds_from_models(tmp_path: Path) -> None:
     """Seeds live in project.models as ModelKind.SEED so ref() resolves, but
     dry-run must list them *only* under ``plan.seeds`` — not mixed into the
-    model-layer table (which was a real UX regression on the Slevomat
-    project: 208 seeds appeared as "layer 1" rows alongside the actual
-    model).
+    model-layer table (which was a real UX regression on the pilot migration:
+    208 seeds appeared as "layer 1" rows alongside the actual model).
     """
     project = tmp_path / "seedsep"
     (project / "models").mkdir(parents=True)
@@ -142,9 +137,7 @@ connections:
     path: {project}/seedsep.duckdb
 """
     )
-    (project / "models" / "summary.sql").write_text(
-        "SELECT SUM(amount) AS total FROM {{ ref('orders') }}"
-    )
+    (project / "models" / "summary.sql").write_text("SELECT SUM(amount) AS total FROM {{ ref('orders') }}")
 
     plan = Runner().plan(RunRequest(project_path=project))
 

@@ -2,6 +2,39 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Doc orientation — read these first
+
+The four canonical docs split cleanly by question:
+
+- **What & why** → [`docs/VISION.md`](docs/VISION.md) — problem
+  statement, target characteristics, non-goals, success criteria.
+  Stable; rarely moves.
+- **How we deliver it, in phases** → [`docs/STRATEGY.md`](docs/STRATEGY.md)
+  — four phases with Goal / Done-done / Deliverables / Out-of-scope.
+  **Web render is the binding gate between Phase 1 and Phase 2.**
+- **Where we are right now** → [`docs/STATUS.md`](docs/STATUS.md) —
+  current phase, current sprint, engine capabilities shipped, open
+  risks. Updates weekly; psáno česky pro Petra.
+- **What to actually work on** → [`docs/ROADMAP.md`](docs/ROADMAP.md)
+  — detailed task list grouped by the phases from STRATEGY.md.
+
+Supporting docs:
+- [`docs/DESIGN.md`](docs/DESIGN.md) — architecture (Project, DAG,
+  Adapter, Executor, Testing, Seeds, Migration).
+- [`docs/RESEARCH.md`](docs/RESEARCH.md) — competitive landscape and
+  why current tools (dbt, SQLMesh, Dagster, …) fall short.
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — `juncture.yaml`,
+  env vars, `schema.yml`, seed type overrides, parallel EXECUTE config.
+- [`docs/MIGRATION_TIPS.md`](docs/MIGRATION_TIPS.md) — Snowflake→DuckDB
+  cross-dialect migration field notes; taxonomy of 20+ type-coercion
+  failure patterns plus a repair-loop blueprint. Source of the Phase 1
+  post-pilot hardening sprints (A/B).
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — performance numbers
+  (≤ 10 % overhead target).
+
+Before touching any area, skim the relevant doc; don't duplicate its
+content in code comments or commit messages.
+
 ## Project
 
 Juncture (`src/juncture`, package name `juncture`, version `0.1.0a0`): a

@@ -50,14 +50,10 @@ def _run_and_dump(project: Path) -> dict[str, list[tuple]]:
     tables = [
         row[0]
         for row in con.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main' ORDER BY table_name"
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' ORDER BY table_name"
         ).fetchall()
     ]
-    return {
-        t: sorted(con.execute(f'SELECT * FROM main."{t}"').fetchall())
-        for t in tables
-    }
+    return {t: sorted(con.execute(f'SELECT * FROM main."{t}"').fetchall()) for t in tables}
 
 
 DIAMOND_SQL = """
@@ -84,9 +80,7 @@ def test_parallel_diamond_matches_sequential(tmp_path: Path) -> None:
     assert par_dump["joined"] == [(1, "a_L", "a_R"), (2, "b_L", "b_R")]
 
 
-INDEPENDENT_SQL = "\n".join(
-    f"CREATE OR REPLACE TABLE t{i} AS SELECT {i} AS x;" for i in range(8)
-)
+INDEPENDENT_SQL = "\n".join(f"CREATE OR REPLACE TABLE t{i} AS SELECT {i} AS x;" for i in range(8))
 
 
 def test_parallel_independent_statements_all_succeed(tmp_path: Path) -> None:
@@ -152,9 +146,7 @@ connections:
 
 
 @pytest.mark.parametrize("parallelism", [2, 4, 8])
-def test_diamond_stable_across_parallelism_widths(
-    tmp_path: Path, parallelism: int
-) -> None:
+def test_diamond_stable_across_parallelism_widths(tmp_path: Path, parallelism: int) -> None:
     project = _scaffold(tmp_path, f"w{parallelism}", DIAMOND_SQL, parallelism=parallelism)
     dump = _run_and_dump(project)
     assert dump["joined"] == [(1, "a_L", "a_R"), (2, "b_L", "b_R")]

@@ -78,7 +78,7 @@ def test_migrate_sync_pull_links_seeds_and_copies_sql(tmp_path: Path) -> None:
 
 
 def test_migrate_sync_pull_translates_snowflake_to_duckdb_by_default(tmp_path: Path) -> None:
-    # The Slevomat BinderException pattern: Snowflake implicitly coerces the
+    # The pilot-migration BinderException pattern: Snowflake implicitly coerces the
     # numeric literal `0` to VARCHAR when the ELSE branch is a string-producing
     # REPLACE. DuckDB requires an explicit CAST.
     sql = (

@@ -56,7 +56,7 @@ def test_translate_sql_same_dialect_is_identity() -> None:
 
 
 def test_harmonize_case_mix_numeric_literal_and_string_producer() -> None:
-    # The Slevomat/Snowflake pattern: CASE WHEN ... THEN 0 ELSE REPLACE(...) END
+    # Real-world Snowflake pattern: CASE WHEN ... THEN 0 ELSE REPLACE(...) END
     # DuckDB rejects mixed VARCHAR/INTEGER_LITERAL; translate must insert an
     # explicit CAST around the numeric literal.
     sql = "SELECT CASE WHEN REPLACE(v, ',', '') = '' THEN 0 ELSE REPLACE(v, ',', '') END FROM t"

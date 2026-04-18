@@ -51,9 +51,9 @@ The overhead we measure therefore includes:
 4. **Snowflake adapter** — same pipeline on a warm Snowflake warehouse
    to verify the "≤1.5x baseline" claim from the Fiser proposal.
 
-## Slevomat real-world benchmark (in flight)
+## Pilot-migration real-world benchmark (in flight)
 
-The Phase 3 Slevomat migration is our first real-world benchmark: a
+The Phase 1 pilot migration is our first real-world benchmark: a
 374-statement Snowflake transformation with 208 parquet seeds (~22 GB)
 on a 4 vCPU / 32 GB DigitalOcean droplet. Numbers will be filled in here
 once the end-to-end run succeeds. Status of the effort:

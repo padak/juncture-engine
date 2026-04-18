@@ -156,9 +156,7 @@ class DuckDBAdapter(Adapter):
         """
         parallelism = _coerce_parallelism(model.config.get("parallelism"))
         if parallelism > 1:
-            return self._execute_raw_parallel(
-                model, rendered_sql, schema=schema, parallelism=parallelism
-            )
+            return self._execute_raw_parallel(model, rendered_sql, schema=schema, parallelism=parallelism)
 
         cursor = self._thread_cursor()
         # DuckDB allows `USE schema;` to set the default search path; with
@@ -382,9 +380,7 @@ def _coerce_parallelism(raw: Any) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError) as exc:
-        raise AdapterError(
-            f"Invalid parallelism value {raw!r}: expected a positive integer"
-        ) from exc
+        raise AdapterError(f"Invalid parallelism value {raw!r}: expected a positive integer") from exc
     if value < 1:
         raise AdapterError(f"parallelism must be >= 1 (got {value})")
     return value

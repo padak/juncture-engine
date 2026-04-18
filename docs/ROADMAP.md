@@ -1,165 +1,271 @@
 # Roadmap
 
-*Living document. Revise as priorities shift. For the current "where we
-are right now" snapshot (Czech), see [`STATUS.md`](STATUS.md).*
+*Living document. Task-level detail backing [`STRATEGY.md`](STRATEGY.md).
+For the weekly snapshot of where we are, see [`STATUS.md`](STATUS.md).
+For the vision, see [`VISION.md`](VISION.md).*
 
-## v0.1 — MVP · delivered (`04eaac5`)
+Phase names and ordering here mirror [`STRATEGY.md`](STRATEGY.md) exactly;
+this document is the detailed, checkable task list that sits underneath
+the four phase-level goals. Contributors scan it to pick up work. If a
+task needs a rationale, link to the relevant section of
+[`STRATEGY.md`](STRATEGY.md), [`DESIGN.md`](DESIGN.md), or
+[`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) rather than duplicating it here.
 
-- Project loader, YAML config, connection registry.
-- Model discovery (SQL + Python), DAG building, cycle detection, layered
-  topological sort, selector grammar (`+`, `tag:`).
-- DuckDB adapter: `table` / `view` / `incremental` / `ephemeral`,
-  per-thread cursors.
-- SQLGlot parser: `ref()` extraction, dialect translation, best-effort
-  validation.
-- `@transform` decorator for Python models; shared `TransformContext`.
-- Executor with parallelism, fail-fast, graceful skip-on-upstream-failure.
-- Test runner with `not_null`, `unique`, `relationships`, `accepted_values`.
-- CLI: `init`, `compile`, `run`, `test`, `docs`, `translate`.
-- Examples: `simple` (4 SQL models) and `ecommerce` (5 SQL + 1 Python).
-- Apache 2.0, Python 3.11+, zero required network access.
+## Phase 1 — DuckDB-first + web render + E2E proof
 
-## v0.2 — "ergonomic MVP" · mostly delivered
+Goal: local DuckDB engine that handles a production-size Keboola
+transformation end-to-end, visible through a small web UI. See
+[`STRATEGY.md`](STRATEGY.md#phase-1--duckdb-first--web-render--e2e-proof-in-progress)
+for the phase goal and done-done criterion.
 
-Target: Juncture is safe to use on a real laptop pipeline of 20-50 models.
+### 1.1 MVP engine — delivered
 
-- [x] **Seeds (CSV)**: `seeds/*.csv` materialize as source tables.
-- [x] **Seeds (Parquet)**: `seeds/<name>/*.parquet` as DuckDB `read_parquet`
-      glob, materialized as VIEW (not TABLE) to avoid copying multi-GB
-      datasets.
-- [x] **Jinja mode** (`jinja: true`): StrictUndefined, `ref()` + `var()`
+- [x] Project loader, YAML config, connection registry (`04eaac5`).
+- [x] Model discovery (SQL + Python), DAG building, cycle detection,
+      layered topological sort.
+- [x] Selector grammar (`+`, `tag:`).
+- [x] DuckDB adapter: `table` / `view` / `incremental` / `ephemeral`,
+      per-thread cursors.
+- [x] SQLGlot parser: `ref()` extraction, dialect translation,
+      best-effort validation.
+- [x] `@transform` decorator for Python models; shared
+      `TransformContext`.
+- [x] Executor with parallelism, fail-fast, graceful
+      skip-on-upstream-failure.
+- [x] Test runner with `not_null`, `unique`, `relationships`,
+      `accepted_values`.
+- [x] CLI: `init`, `compile`, `run`, `test`, `docs`, `translate`.
+- [x] Examples: `simple` (4 SQL models) and `ecommerce`
+      (5 SQL + 1 Python).
+- [x] Apache 2.0, Python 3.11+, zero required network access.
+
+### 1.2 Ergonomic MVP — delivered
+
+Target: Juncture is safe to use on a real laptop pipeline of 20-50
+models. (This is the scope previously tracked as v0.2; mostly folded
+into Phase 1 by STRATEGY.)
+
+- [x] Seeds (CSV): `seeds/*.csv` materialize as source tables.
+- [x] Parquet seed loader + quoted identifiers (`in.c-db.carts` stays
+      verbatim).
+- [x] Parquet seeds as VIEW (not TABLE) + DuckDB `memory_limit` /
+      `temp_directory` / `extensions` wiring.
+- [x] `_discover_seeds` follows symlinked directories
+      (`os.walk(followlinks=True)`) — required for kbagent-produced
+      parquet pools shared across projects.
+- [x] Hybrid type inference for parquet seeds (full-scan < 1 M rows,
+      sampled above).
+- [x] Parallel seed loading via `ThreadPoolExecutor`.
+- [x] Jinja mode (`jinja: true`): `StrictUndefined`, `ref()` + `var()`
       helpers.
-- [x] **Env var interpolation** in `juncture.yaml`: `${VAR}`,
+- [x] Env var interpolation in `juncture.yaml`: `${VAR}`,
       `${VAR:-fallback}`, `.env` auto-load.
-- [x] **Custom SQL tests** under `tests/` (arbitrary `.sql` returning
+- [x] Custom SQL tests under `tests/` (arbitrary `.sql` returning
       failing rows).
-- [x] **Incremental state table** (`_juncture_state`).
-- [x] **Migration tool** (`juncture migrate-keboola` + sync-pull migrator):
-      converts Keboola SQL transformation layouts into a Juncture project.
-- [x] **`EXECUTE` materialization** for multi-statement Snowflake SQL
-      migrated as-is.
-- [x] **Parallel EXECUTE**: intra-script DAG + `ThreadPoolExecutor` per
-      topological layer, opt-in via `config.parallelism: N`. Default 1
-      = sequential (back-compat).
-- [x] **`juncture run --dry-run`**: plan-only mode — loads project,
-      computes layers, surfaces intra-EXECUTE stats, without opening the
-      adapter or loading seeds.
-- [x] **`juncture split-execute`**: rewrites a multi-statement EXECUTE
-      script into one `.sql` model per CTAS target with
-      `{{ ref(...) }}` inference; non-CTAS statements (INSERT/UPDATE/…)
-      collected into a residual EXECUTE model with auto-inferred
-      depends_on.
-- [x] **Hybrid type inference** for parquet seeds (full-scan < 1M rows,
-      sample above).
-- [x] **Parallel seed loading** via `ThreadPoolExecutor`.
-- [x] `_discover_seeds` follows symlinks (for kbagent-produced parquet).
-- [x] DuckDB `memory_limit` / `temp_directory` / `extensions` wiring.
-- [ ] **Advanced selectors**: `path:marts/`, `state:modified+`.
-- [ ] **Unit tests for models**: input → expected output in YAML.
-- [ ] **`juncture docs --serve`**: minimal static HTML with DAG + column
-      tables.
-- [ ] **Structured logging** (JSON mode for ingestion).
-- [ ] **pre-commit hooks**: ruff, mypy, basic schema.yml linting.
+- [x] Incremental state table (`_juncture_state`).
 
-## Phase 3 — Slevomat E2E migration · in flight
+### 1.3 Multi-statement EXECUTE + migration helpers — delivered
+
+Target: be able to ingest a real Keboola Snowflake transformation
+as-is and run it against DuckDB.
+
+- [x] `EXECUTE` materialization for multi-statement Snowflake SQL
+      migrated as-is (no `CREATE OR REPLACE` wrapping).
+- [x] `migrate-keboola` migrator from raw Keboola config JSON.
+- [x] `sync-pull` migrator reading the `kbagent sync pull` filesystem
+      layout (symlinked parquet seeds, `EXECUTE` materialization).
+- [x] `harmonize_case_types` AST pass + `juncture sanitize` CLI for
+      Snowflake → DuckDB CASE type mismatches.
+- [x] `StatementNode` + `build_statement_dag` — intra-script DAG API in
+      the parser (`a300e37`).
+- [x] Parallel EXECUTE: `config.parallelism: N` iterates intra-script
+      layers through `ThreadPoolExecutor`. Default `N=1` is sequential
+      (back-compat).
+- [x] `juncture run --dry-run`: plan-only mode showing model layers +
+      intra-EXECUTE layers without opening the adapter or loading
+      seeds.
+- [x] `juncture split-execute`: rewrites an EXECUTE monolith into one
+      `.sql` model per CTAS target with `{{ ref(...) }}` inference;
+      non-CTAS statements collected into a residual EXECUTE model with
+      auto-inferred `depends_on`.
+- [x] `juncture run --reuse-seeds`: skips re-inference for already
+      materialized seeds.
+- [x] `--parallelism` / `-P` CLI override for benchmarking EXECUTE
+      runs.
+- [x] `juncture compile --dot <file>` exports the DAG as Graphviz DOT.
+
+### 1.4 Pilot migration E2E proof — delivered
 
 Target: run a real 374-statement, 208-seed Snowflake transformation
-end-to-end on DuckDB as the forcing function for parquet seeds, EXECUTE
-materialization, and type inference.
+end-to-end on DuckDB as the forcing function for parquet seeds,
+EXECUTE materialization, and type inference. Done on the pilot
+migration of a production-size Keboola transformation.
 
-- [x] `sync-pull` migrator reading `kbagent sync pull` filesystem layout.
-- [x] Parquet seeds as symlinked VIEWs with quoted identifiers
-      (`in.c-db.carts` stays verbatim).
-- [x] Parallel seed load on 208 Slevomat parquet directories (~22 GB).
-- [x] SQLGlot parse 374/374 Snowflake statements → DuckDB.
-- [ ] **Successful executor run** — blocker: VARCHAR vs `INTEGER_LITERAL`
-      in `CASE` because Storage stores everything as VARCHAR. Fix pending
-      verification of `cfbc5ee` hybrid inference on the real dataset.
-- [ ] Record a real-world benchmark number in `BENCHMARKS.md`.
+- [x] SQLGlot parses 374/374 Snowflake statements → DuckDB.
+- [x] Parallel seed load on 208 parquet directories (~22 GB) from the
+      pilot migration.
+- [x] Pilot migration end-to-end success on DuckDB (374/374
+      statements executed).
+- [x] [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) written — cross-dialect
+      migration field notes, failure taxonomy, repair-loop blueprint.
 
-Infrastructure: DO droplet 4 vCPU / 32 GB, volume at
-`/mnt/volume_nyc1_juncture/juncture-data/slevomat-project/`,
-read-only kbagent token for Slevomat.
+### 1.5 Post-pilot hardening (in-flight)
 
-Detailed status and known blockers: [`STATUS.md`](STATUS.md).
+Pulled from [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8 "Concrete
+Juncture roadmap" priorities table. The goal is to collapse the next
+migration from ~26 repair rounds to 2–3.
 
-## v0.3 — "real backends"
+- [ ] **P0** — `juncture run --continue-on-error` on EXECUTE
+      materialization (`duckdb_adapter._execute_raw`); emit a
+      `RunReport` with per-statement errors instead of a single
+      `AdapterError`.
+- [ ] **P0** — schema-aware `translate_sql(schema=...)` via
+      `sqlglot.optimizer.annotate_types`, plus new AST passes:
+      `harmonize_binary_ops`, `harmonize_function_args`,
+      `fix_date_diff_signature`, `fix_timestamp_arithmetic`.
+- [ ] **P1** — sentinel detector in `type_inference`: emit per-column
+      sentinel profiles so `CAST(col AS INT)` expands to
+      `TRY_CAST(NULLIF(col, sentinel) AS BIGINT)` automatically.
+- [ ] **P1** — error classifier `juncture.diagnostics.classify_error`
+      (regex → bucket lookup powering both AI prompts and human
+      triage).
+- [ ] **P1** — `migrate-sync-pull --validate` pre-flight report.
+- [ ] **P2** — statement-dependency DAG filter that separates primary
+      errors from cascade errors, re-using `build_statement_dag`.
+- [ ] **P2** — `juncture repair --max-iterations N --agent-model
+      sonnet` (new subcommand wrapping the diagnostics → agent → patch
+      loop).
+- [ ] **P3** — intra-script parallel EXECUTE race fix (currently
+      forces `parallelism: 1` on migrated bodies).
 
-Target: A Snowflake-based team can run the same project locally *and* in
-production without code changes.
+### 1.6 Ergonomic gaps (still open)
 
-- [ ] **Snowflake adapter** (stub exists in `snowflake_adapter.py`): real
-      connection, materialization, `fetch_ref` via Arrow, `MERGE INTO` for
-      incrementals by `unique_key`, `CLUSTER BY`.
-- [ ] **BigQuery adapter**: partitioning, clustering, external tables
-      from GCS.
-- [ ] **Postgres adapter**: DDL + `ON CONFLICT` for incrementals.
-- [ ] **SQL dialect guard**: detect incompatible functions at compile time
-      and suggest SQLGlot translations.
-- [ ] **Connection-agnostic tests** — tests must pass on DuckDB locally
-      and Snowflake in prod.
-- [ ] **Performance budget** tests: Juncture overhead ≤ 10 % of raw query
-      time (per Keboola Oldie but Goldie v2 request).
+- [ ] Advanced selectors: `path:marts/`, `state:modified+`.
+- [ ] Model unit tests (input → expected output in YAML).
+- [ ] Structured JSON logging mode for ingestion.
+- [ ] Pre-commit hooks: ruff, mypy, basic `schema.yml` linting.
 
-## v0.4 — "Keboola integration"
+### 1.7 Phase 1 gate items
 
-Target: Juncture ships as a Keboola component and replaces the four legacy
-transformation components in a real project.
+- [ ] **Web render** — `juncture docs --serve` (or equivalent small
+      Python HTTP server) rendering the compiled DAG, per-model
+      schema, and run history from the manifest. **This is the binding
+      gate item for Phase 1**; no Phase 2 work starts until a user can
+      open `localhost:N` and see the DAG of a production-size
+      transformation running on DuckDB. Not yet in the codebase.
+- [ ] Pilot-migration benchmark numbers recorded in
+      [`BENCHMARKS.md`](BENCHMARKS.md) (sequential baseline vs
+      `parallelism ∈ {1, 2, 4, 8}`).
 
-- [x] **Keboola component wrapper** scaffold (`docker/keboola/`,
+## Phase 2 — Production backends + Keboola component
+
+Goal: the same project runs locally on DuckDB and in production on
+Snowflake / BigQuery / Postgres, and is deployable as a Keboola
+component. See
+[`STRATEGY.md`](STRATEGY.md#phase-2--production-backends--keboola-component)
+for the phase goal and done-done criterion.
+
+### 2.1 Warehouse adapters
+
+- [ ] Snowflake adapter (stub exists in `snowflake_adapter.py`): real
+      connection, `materialize_sql`, `fetch_ref` via Arrow,
+      `MERGE INTO` incrementals by `unique_key`, `CLUSTER BY`.
+- [ ] BigQuery adapter: partitioning, clustering, external tables from
+      GCS.
+- [ ] Postgres adapter: DDL + `ON CONFLICT` for incrementals.
+
+### 2.2 Cross-dialect guarantees
+
+- [ ] SQL dialect guard: compile-time detection of incompatible
+      functions with SQLGlot translation suggestions.
+- [ ] Connection-agnostic test suite: the same `schema.yml` tests pass
+      on DuckDB locally and Snowflake in production.
+
+### 2.3 Keboola component
+
+- [x] Keboola component wrapper scaffold (`docker/keboola/`,
       `juncture.keboola`) — reads `/data/config.json`, shells out to
       `juncture run`.
-- [ ] **Real SAPI upload** of output tables (today the upload is a stub).
-- [ ] **Auto-generate** `juncture.yaml` from Keboola config inside the
+- [ ] Real SAPI upload of output tables (today's upload is a stub).
+- [ ] Auto-generate `juncture.yaml` from Keboola config inside the
       wrapper (beyond what `sync-pull` does offline).
-- [ ] **Input/output mapping** auto-detect via SQLGlot.
-- [ ] **Dev/prod branch support**: Keboola branches → separate schemas.
-- [ ] **OpenLineage events** per model; integrates with Keboola Lineage
-      (emitter exists at `juncture.observability.lineage`).
-- [ ] **Job artifacts**: every run uploads a `manifest.json` + logs.
+- [ ] Input/output mapping auto-detect via SQLGlot.
+- [ ] Dev/prod branch support — Keboola branches map to separate
+      schemas.
 
-## v1.0 — "production"
+### 2.4 Observability + artifacts
 
-Target: stable API, semantic versioning, used on at least 3 customer
-pipelines.
+- [ ] OpenLineage START / COMPLETE / FAIL events per model wired to
+      Keboola Lineage (emitter skeleton at
+      `juncture.observability.lineage`).
+- [ ] Job artifacts — every run uploads `manifest.json` + logs.
 
-- [ ] API freeze for `juncture.core.*` public symbols.
-- [ ] **Data contracts**: Pydantic models describing input/output schemas;
-      CI-friendly `juncture validate-contract`.
-- [ ] **Column-level lineage** exposed via the manifest and docs UI.
-- [ ] **MCP server** (`juncture-mcp`) promoted from skeleton to shipping
-      product — `list_models`, `compile`, `run_subgraph`, `translate_sql`,
-      `explain_model` as MCP tools.
-- [ ] **Official pypi release**, GitHub Actions CI/CD, docs on Read the
-      Docs.
-- [ ] **Python 3.13** support.
+## Phase 3 — v1.0 production
 
-## v2.0 — "differentiating features"
+Goal: a stable, semantically versioned API used on at least three
+real customer pipelines, published on pypi with docs on Read the
+Docs. See
+[`STRATEGY.md`](STRATEGY.md#phase-3--v10-production) for the phase
+goal and done-done criterion.
 
-Things we have no competitive pressure to ship now, but will truly matter:
+### 3.1 API + contracts
 
-- [ ] **Virtual data environments** à la SQLMesh: hashes of model
-      attributes create snapshot tables; promotion is a pointer swap.
-- [ ] **Semantic / metrics layer**: Cube-compatible DSL baked in.
-- [ ] **AI dialect arbitrage**: run on DuckDB while data fits; spill over
-      to Snowflake/BigQuery transparently.
-- [ ] **Ibis materialization**: `@transform` functions using `ibis.Table`
+- [ ] API freeze for `juncture.core.*` public symbols — semver,
+      deprecation policy, `__all__` audit.
+- [ ] Data contracts: Pydantic models describing input/output
+      schemas; `juncture validate-contract` CI command.
+- [ ] Column-level lineage exposed via the manifest and the docs UI
+      from Phase 1.
+
+### 3.2 Agent surface
+
+- [ ] MCP server (`juncture-mcp`) promoted from skeleton to shipping
+      product — `list_models`, `compile`, `run_subgraph`,
+      `translate_sql`, `explain_model` as production MCP tools.
+
+### 3.3 Release engineering
+
+- [ ] Python 3.13 support.
+- [ ] GitHub Actions CI/CD shipping tagged pypi releases.
+- [ ] Official pypi release and docs on Read the Docs.
+- [ ] Performance budget tests (Juncture overhead ≤ 10 % of raw query
+      time, per the "Oldie but Goldie v2" benchmark pipeline).
+
+## Phase 4 — v2.0 differentiators
+
+Goal: ship the features that make Juncture uniquely valuable
+compared to dbt and SQLMesh. See
+[`STRATEGY.md`](STRATEGY.md#phase-4--v20-differentiators) for the
+phase goal and done-done criterion.
+
+### 4.1 Environment + arbitrage
+
+- [ ] Virtual data environments à la SQLMesh: hashes of model
+      attributes create snapshot tables; promotion is a pointer swap,
+      so dev branches don't re-run full tables.
+- [ ] AI dialect arbitrage: auto-switch DuckDB ↔ warehouse based on
+      data size and cost; run on DuckDB while data fits, spill to
+      Snowflake/BigQuery transparently.
+
+### 4.2 Semantic + authoring
+
+- [ ] Semantic / metrics layer: Cube-compatible DSL baked in so
+      metrics live with the models.
+- [ ] Ibis materialization: `@transform` functions using `ibis.Table`
       compiled to the target dialect.
-- [ ] **Agentic authoring**: the Skill grows into a full agent loop —
-      "build me a daily orders dashboard" → Juncture scaffolds, runs,
-      tests, iterates, commits.
+- [ ] Agentic authoring: full agent loop where a prompt such as
+      "build me a daily orders dashboard" scaffolds, runs, tests, and
+      iterates the project end-to-end.
 
 ## Explicit non-goals
 
-- **General-purpose orchestration**. Keboola flows + Dagster cover this.
-- **Data ingestion**. dlt / Airbyte / Keboola extractors cover this.
-- **Dashboarding**. Out of scope.
-- **Fully managed cloud**. Juncture is a library + CLI; running it in
-  Keboola (or in anyone's CI) is on the user.
+- General-purpose orchestration (Dagster / Airflow cover this).
+- Data ingestion (dlt / Airbyte / Keboola extractors).
+- Dashboarding.
+- Fully managed cloud hosting.
 
 ## How to influence this roadmap
 
 1. File an issue in the repo with the concrete use case.
-2. If it's a bug blocking adoption, it jumps to the top of the next minor
-   release.
+2. If it blocks adoption, it jumps to the top of the next minor release.
 3. Larger features go through a short RFC in `docs/rfcs/NNNN-title.md`.

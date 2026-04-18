@@ -11,7 +11,7 @@ import duckdb
 from juncture.core.runner import Runner, RunRequest
 from juncture.migration.split_execute import split_execute_script
 
-# A small-ish Slevomat-like script:
+# A small-ish pilot-migration-like script:
 # * one external seed (`orders`)
 # * three CTAS producers with chain / diamond shape
 # * one residual UPDATE that touches a produced table
@@ -34,11 +34,7 @@ CREATE OR REPLACE TABLE revenue AS
 def _write_orders_seed(project: Path) -> None:
     (project / "seeds").mkdir(parents=True, exist_ok=True)
     (project / "seeds" / "orders.csv").write_text(
-        "id,status,amount\n"
-        "1,paid,100\n"
-        "2,paid,250\n"
-        "3,cancelled,40\n"
-        "4,pending,10\n"
+        "id,status,amount\n1,paid,100\n2,paid,250\n3,cancelled,40\n4,pending,10\n"
     )
 
 
@@ -135,9 +131,7 @@ def test_split_execute_with_residual_preserves_semantics(tmp_path: Path) -> None
         (split / "models" / f"{m.name}.sql").write_text(m.body.rstrip(";").strip() + "\n")
 
     # Residual: prepend the LIMIT 0 ref() hints so depends_on is inferred.
-    ref_loads = "".join(
-        f"SELECT 1 FROM {{{{ ref('{n}') }}}} LIMIT 0;\n" for n in result.residual_depends_on
-    )
+    ref_loads = "".join(f"SELECT 1 FROM {{{{ ref('{n}') }}}} LIMIT 0;\n" for n in result.residual_depends_on)
     (split / "models" / "_residual.sql").write_text(ref_loads + "\n" + result.residual)
     (split / "models" / "schema.yml").write_text(
         """models:
