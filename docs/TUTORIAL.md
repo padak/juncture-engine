@@ -387,5 +387,3 @@ juncture run     --project examples/tutorial_shop \
   reference including seed layouts and parallel EXECUTE.
 - [`DESIGN.md`](DESIGN.md) — architecture (Project, DAG, Adapter,
   Executor).
-- [`rfcs/0001-web-ui-v2.md`](rfcs/0001-web-ui-v2.md) — the browser
-  UI that renders everything you built above.

@@ -1,22 +1,15 @@
 # Roadmap
 
-*Living document. Task-level detail backing [`STRATEGY.md`](STRATEGY.md).
-For the weekly snapshot of where we are, see [`STATUS.md`](STATUS.md).
-For the vision, see [`VISION.md`](VISION.md).*
-
-Phase names and ordering here mirror [`STRATEGY.md`](STRATEGY.md) exactly;
-this document is the detailed, checkable task list that sits underneath
-the four phase-level goals. Contributors scan it to pick up work. If a
-task needs a rationale, link to the relevant section of
-[`STRATEGY.md`](STRATEGY.md), [`DESIGN.md`](DESIGN.md), or
-[`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) rather than duplicating it here.
+*Living document. Phased task list with one checkbox per
+deliverable. For the vision and rationale, see
+[`VISION.md`](VISION.md); for the architecture, see
+[`DESIGN.md`](DESIGN.md). Contributors scan this doc to pick up
+work.*
 
 ## Phase 1 — DuckDB-first + web render + E2E proof
 
 Goal: local DuckDB engine that handles a production-size Keboola
-transformation end-to-end, visible through a small web UI. See
-[`STRATEGY.md`](STRATEGY.md#phase-1--duckdb-first--web-render--e2e-proof-in-progress)
-for the phase goal and done-done criterion.
+transformation end-to-end, visible through a small web UI.
 
 ### 1.1 MVP engine — delivered
 
@@ -107,14 +100,13 @@ migration of a production-size Keboola transformation.
       pilot migration.
 - [x] Pilot migration end-to-end success on DuckDB (374/374
       statements executed).
-- [x] [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) written — cross-dialect
-      migration field notes, failure taxonomy, repair-loop blueprint.
+- [x] Cross-dialect migration field notes, failure taxonomy, and
+      repair-loop blueprint captured for the next migration round.
 
 ### 1.5 Post-pilot hardening (in-flight)
 
-Pulled from [`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) §8 "Concrete
-Juncture roadmap" priorities table. The goal is to collapse the next
-migration from ~26 repair rounds to 2–3.
+The goal is to collapse the next migration from ~26 repair rounds
+to 2–3 (derived from the pilot migration field notes).
 
 - [x] **P0** — `juncture run --continue-on-error` on EXECUTE
       materialization (`duckdb_adapter._execute_raw`); emit a
@@ -178,13 +170,12 @@ migration from ~26 repair rounds to 2–3.
       vendored cytoscape.js. Reads the compile manifest per-request
       so schema.yml edits show up on refresh. Closes the binding gate
       that was holding Phase 2 adapter work.
-- [x] Pilot-migration benchmark numbers recorded in
-      [`BENCHMARKS.md`](BENCHMARKS.md) — seven scenarios (monolith
-      cold/warm, parallel EXECUTE, split DAG cold + threads 1/4/8).
+- [x] Pilot-migration benchmark numbers recorded — seven scenarios
+      (monolith cold/warm, parallel EXECUTE, split DAG cold +
+      threads 1/4/8).
 
 ### 1.8 Web UI v2 — proposed
 
-Plan in [`docs/rfcs/0001-web-ui-v2.md`](rfcs/0001-web-ui-v2.md).
 Four milestones (M1–M4) that extend the Phase 1 web render from
 "glance only" to a tool usable by both a data engineer (source
 view, diagnostics, seeds, reliability) and a CDO (ownership, SLA,
@@ -227,9 +218,7 @@ adapter work — neither blocks the other.
 
 Goal: the same project runs locally on DuckDB and in production on
 Snowflake / BigQuery / JDBC, and is deployable as a Keboola
-component. See
-[`STRATEGY.md`](STRATEGY.md#phase-2--production-backends--keboola-component)
-for the phase goal and done-done criterion.
+component.
 
 ### 2.1 Warehouse adapters
 
@@ -272,9 +261,7 @@ for the phase goal and done-done criterion.
 
 Goal: a stable, semantically versioned API used on at least three
 real customer pipelines, published on pypi with docs on Read the
-Docs. See
-[`STRATEGY.md`](STRATEGY.md#phase-3--v10-production) for the phase
-goal and done-done criterion.
+Docs.
 
 ### 3.1 API + contracts
 
@@ -301,10 +288,7 @@ goal and done-done criterion.
 
 ## Phase 4 — v2.0 differentiators
 
-Goal: ship the features that make Juncture uniquely valuable
-compared to dbt and SQLMesh. See
-[`STRATEGY.md`](STRATEGY.md#phase-4--v20-differentiators) for the
-phase goal and done-done criterion.
+Goal: ship the features that make Juncture uniquely valuable.
 
 ### 4.1 Environment + arbitrage
 
@@ -336,4 +320,5 @@ phase goal and done-done criterion.
 
 1. File an issue in the repo with the concrete use case.
 2. If it blocks adoption, it jumps to the top of the next minor release.
-3. Larger features go through a short RFC in `docs/rfcs/NNNN-title.md`.
+3. Larger features go through a short RFC (internal `docs/priv/rfcs/`
+   tree).

@@ -416,9 +416,8 @@ fix directly.
 Consumed by ``juncture diagnostics``, which runs the project with
 ``--continue-on-error``, aggregates every ``StatementError`` across
 models, and prints a bucketised summary plus one representative error
-per subcategory. See ``docs/MIGRATION_TIPS.md`` §5.2 for the taxonomy
-the regex rules encode; add new patterns to
-``_RULES`` in ``classifier.py`` when a migration surfaces one.
+per subcategory. Add new patterns to ``_RULES`` in ``classifier.py``
+when a migration surfaces one.
 
 ### 3.13 Schema-aware translate (``sqlglot_parser.translate_sql``)
 

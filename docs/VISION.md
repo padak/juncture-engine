@@ -1,10 +1,9 @@
 # Vision: Juncture
 
 *What we are building, and why. One stable reference. This document
-moves only when the vision itself moves — not when sprints move (see
-[`STATUS.md`](STATUS.md)), not when the architecture evolves (see
-[`DESIGN.md`](DESIGN.md)), and not when the competitive landscape
-shifts (see [`RESEARCH.md`](RESEARCH.md)).*
+moves only when the vision itself moves — not when sprints move,
+when the architecture evolves (see [`DESIGN.md`](DESIGN.md)), or
+when the competitive landscape shifts.*
 
 ## Pitch
 
@@ -125,9 +124,7 @@ Lightweight enough for ad-hoc data cleanup on a laptop, and serious
 enough for production workloads. The pilot migration of a real
 Keboola customer pipeline ran **208 parquet seeds × 374 SQL
 statements** end-to-end through Juncture — proving the engine
-handles production-grade volume, not toy examples. See
-[`MIGRATION_TIPS.md`](MIGRATION_TIPS.md) for the field notes from
-that migration.
+handles production-grade volume, not toy examples.
 
 ## Non-goals
 
@@ -146,9 +143,8 @@ Juncture is deliberately narrow. It is **not** any of:
    multi-tenant runtime. The engine is a library and a CLI; the
    Keboola wrapper provides the only managed deployment story.
 
-We cite the alternatives that do these jobs well in
-[`RESEARCH.md`](RESEARCH.md) and intentionally compose with them
-rather than competing.
+We compose with these alternatives — orchestration, catalog,
+ingestion, dashboarding — rather than competing.
 
 ## Success criteria
 
@@ -168,6 +164,5 @@ We will know Juncture has won when:
   `duckdb-transformation`, and `dbt-transformation`, and legacy
   customers have a documented migration path off each.
 
-For the competitive landscape that shaped these choices, see
-[`RESEARCH.md`](RESEARCH.md). For the architecture that implements
-them, see [`DESIGN.md`](DESIGN.md).
+For the architecture that implements these choices, see
+[`DESIGN.md`](DESIGN.md).

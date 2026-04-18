@@ -155,10 +155,8 @@ markdown-it. Tabs:
 
 ## Development plan
 
-Rationale in [`docs/VISION.md`](docs/VISION.md), sequencing in
-[`docs/STRATEGY.md`](docs/STRATEGY.md), task list in
-[`docs/ROADMAP.md`](docs/ROADMAP.md); weekly snapshot in
-[`docs/STATUS.md`](docs/STATUS.md) (Czech).
+Rationale in [`docs/VISION.md`](docs/VISION.md), task list in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### Phase 2 — adapters and Keboola
 
@@ -202,9 +200,7 @@ Rationale in [`docs/VISION.md`](docs/VISION.md), sequencing in
   the MCP server (Phase 3). Goal: a working pipeline from a
   sentence, without opening a Jinja macro.
 
-Each item ships after it's been tested on a real production workload
-(see [`docs/STRATEGY.md`](docs/STRATEGY.md) Phase 4 done-done
-criterion).
+Each item ships after it's been tested on a real production workload.
 
 ## Example minimal Python model
 
@@ -239,11 +235,6 @@ as SQL's `{{ var('key') }}`.
 - [`docs/DESIGN.md`](docs/DESIGN.md) — architecture (Project, DAG,
   Adapter, Executor, Testing, Seeds, Migration).
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — phased task list.
-- [`docs/STATUS.md`](docs/STATUS.md) — where we are right now (Czech).
-- [`docs/RESEARCH.md`](docs/RESEARCH.md) — competitive landscape.
-- [`docs/MIGRATION_TIPS.md`](docs/MIGRATION_TIPS.md) — Snowflake →
-  DuckDB migration field notes.
-- [`docs/rfcs/`](docs/rfcs/) — design proposals.
 
 ## License
 
