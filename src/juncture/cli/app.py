@@ -1,4 +1,4 @@
-"""Typer CLI: ``juncture init | compile | run | test | docs | translate``."""
+"""Typer CLI: ``juncture init | compile | run | test | docs | web | sql | migrate | debug``."""
 
 from __future__ import annotations
 
@@ -12,9 +12,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from juncture._version import __version__
+from juncture.cli.debug_cmds import debug_app
+from juncture.cli.migrate import migrate_app
+from juncture.cli.sql import sql_app
+from juncture.core.dag import DAG
 from juncture.core.project import Project
 from juncture.core.runner import DryRunReport, Runner, RunRequest
-from juncture.parsers.sqlglot_parser import translate_sql
 
 app = typer.Typer(
     name="juncture",
@@ -22,6 +25,11 @@ app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
+
+app.add_typer(sql_app, rich_help_panel="Tools")
+app.add_typer(migrate_app, rich_help_panel="Tools")
+app.add_typer(debug_app, rich_help_panel="Tools")
+
 console = Console()
 logging.basicConfig(
     level=logging.INFO,
@@ -55,7 +63,12 @@ def _root(
         raise typer.Exit()
 
 
-@app.command()
+# ---------------------------------------------------------------------------
+# Core workflow
+# ---------------------------------------------------------------------------
+
+
+@app.command(rich_help_panel="Core workflow")
 def init(
     path: Path = typer.Argument(Path("."), help="Target directory for the new project."),
     name: str = typer.Option("my_juncture_project", "--name", help="Project name."),
@@ -115,7 +128,7 @@ connections:
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Core workflow")
 def compile(
     project: Path = typer.Option(Path("."), "--project", "-p", help="Project directory."),
     output_json: bool = typer.Option(False, "--json", help="Emit DAG as JSON."),
@@ -178,7 +191,7 @@ _DOT_COLOR = {
 }
 
 
-def _write_dag_dot(dag, path: Path, *, project_name: str) -> None:
+def _write_dag_dot(dag: DAG, path: Path, *, project_name: str) -> None:
     """Write ``dag`` as a Graphviz DOT file with colour-coded nodes by kind."""
     lines: list[str] = [
         f'digraph "{project_name}" {{',
@@ -192,7 +205,6 @@ def _write_dag_dot(dag, path: Path, *, project_name: str) -> None:
         color = _DOT_COLOR.get(m.kind.value, "#FFFFFF")
         label = m.name.replace('"', '\\"') + f"\\n[{m.kind.value}/{m.materialization.value}]"
         lines.append(f'  "{m.name}" [label="{label}", fillcolor="{color}"];')
-    # Edges (depends_on -> model).
     for name in dag.topological_order():
         m = dag.model(name)
         for dep in sorted(m.depends_on):
@@ -201,7 +213,7 @@ def _write_dag_dot(dag, path: Path, *, project_name: str) -> None:
     path.write_text("\n".join(lines))
 
 
-@app.command()
+@app.command(rich_help_panel="Core workflow")
 def run(
     project: Path = typer.Option(Path("."), "--project", "-p"),
     select: list[str] = typer.Option([], "--select", "-s", help="Model selectors."),
@@ -233,7 +245,7 @@ def run(
         "--continue-on-error",
         help="For EXECUTE materializations: keep running after a failing statement "
         "and collect every primary error into the run report. Intended for migration "
-        "triage — pair with `juncture diagnostics` to classify the errors.",
+        "triage — pair with `juncture debug diagnostics` to classify the errors.",
     ),
     disable: list[str] = typer.Option(
         [],
@@ -250,8 +262,6 @@ def run(
 ) -> None:
     """Execute the project's DAG."""
     run_vars = dict(pair.split("=", 1) for pair in var) if var else {}
-    # Typer gives us list[str]; flatten comma-separated values so
-    # `--disable a,b,c` == `--disable a --disable b --disable c`.
     disable_flat = [x.strip() for item in disable for x in item.split(",") if x.strip()]
     enable_only_flat = [x.strip() for item in enable_only for x in item.split(",") if x.strip()]
     request = RunRequest(
@@ -305,7 +315,7 @@ def run(
     # Per-statement errors from continue-on-error runs. Printed after the
     # main results table so they don't crowd the overview. First three
     # errors verbatim, plus a count of the rest — migration triage uses
-    # `juncture diagnostics` on the full list anyway.
+    # `juncture debug diagnostics` on the full list anyway.
     for r in report.models.runs:
         if not (r.result and r.result.statement_errors):
             continue
@@ -383,7 +393,6 @@ def _render_plan(plan: DryRunReport) -> None:
         )
     console.print(mt)
 
-    # Per-EXECUTE-model layer histogram so users can eyeball parallelism ceiling.
     for n in plan.models:
         if n.intra is None:
             continue
@@ -393,7 +402,7 @@ def _render_plan(plan: DryRunReport) -> None:
             console.print(f"  layer {i + 1:>3}: {size:>4} {bar}")
 
 
-@app.command()
+@app.command(rich_help_panel="Core workflow")
 def test(
     project: Path = typer.Option(Path("."), "--project", "-p"),
     select: list[str] = typer.Option([], "--select", "-s"),
@@ -401,19 +410,40 @@ def test(
     threads: int = typer.Option(4, "--threads", "-t"),
 ) -> None:
     """Run only the data tests (assumes models are already materialized)."""
-    run(
-        project=project,
+    request = RunRequest(
+        project_path=project.resolve(),
         select=select,
-        exclude=[],
         connection=connection,
         threads=threads,
         run_tests=True,
-        full_refresh=False,
-        var=[],
     )
+    report = Runner().run(request)
+
+    if report.tests:
+        tt = Table(title="Data tests")
+        tt.add_column("Model")
+        tt.add_column("Column")
+        tt.add_column("Test")
+        tt.add_column("Result")
+        tt.add_column("Failing", justify="right")
+        for t in report.tests:
+            color = "green" if t.passed else "red"
+            tt.add_row(
+                t.model,
+                t.column or "—",
+                t.name,
+                f"[{color}]{'pass' if t.passed else 'fail'}[/]",
+                str(t.failing_rows),
+            )
+        console.print(tt)
+    else:
+        console.print("[dim]No data tests found.[/]")
+
+    if not report.ok:
+        raise typer.Exit(code=1)
 
 
-@app.command()
+@app.command(rich_help_panel="Core workflow")
 def docs(
     project: Path = typer.Option(Path("."), "--project", "-p"),
     output: Path = typer.Option(Path("target/docs"), "--output", "-o"),
@@ -447,363 +477,7 @@ def docs(
     console.print(f"[green]Docs written to[/] {output / 'manifest.json'}")
 
 
-@app.command()
-def translate(
-    sql: str = typer.Argument(..., help="SQL snippet or path to .sql file."),
-    read: str = typer.Option("snowflake", "--from", "-f"),
-    write: str = typer.Option("duckdb", "--to", "-t"),
-) -> None:
-    """Translate SQL between dialects via SQLGlot."""
-    sql_text = Path(sql).read_text() if Path(sql).exists() else sql
-    translated = translate_sql(sql_text, read=read, write=write)
-    console.print(Panel(translated, title=f"{read} -> {write}", border_style="cyan"))
-
-
-@app.command("migrate-keboola")
-def migrate_keboola(
-    config: Path = typer.Argument(..., help="Path to a Keboola SQL transformation config JSON."),
-    output: Path = typer.Option(Path("migrated"), "--output", "-o", help="Target project directory."),
-    backend: str = typer.Option("duckdb", "--backend", "-b"),
-) -> None:
-    """Convert a Keboola SQL transformation config into a Juncture project."""
-    from juncture.migration import migrate_keboola_sql_transformation
-
-    result = migrate_keboola_sql_transformation(
-        config_json_path=config,
-        target_dir=output,
-        backend=backend,
-    )
-    table = Table(title=f"Migrated {len(result.models)} model(s) -> {result.project_path}")
-    table.add_column("#", justify="right")
-    table.add_column("Model")
-    for i, name in enumerate(result.models, start=1):
-        table.add_row(str(i), name)
-    console.print(table)
-    console.print(
-        Panel(
-            f"[green]Project at[/] {result.project_path}\n\n"
-            f"Next: [bold]juncture compile --project {result.project_path}[/]",
-            title="migrate-keboola",
-            border_style="green",
-        )
-    )
-
-
-@app.command("migrate-sync-pull")
-def migrate_sync_pull(
-    source: Path = typer.Argument(
-        ...,
-        help="Directory produced by kbagent sync pull, e.g. "
-        "main/transformation/keboola.snowflake-transformation/<name>/",
-    ),
-    output: Path = typer.Option(Path("migrated-sync-pull"), "--output", "-o"),
-    seeds: Path = typer.Option(
-        ...,
-        "--seeds",
-        help="Directory with parquet seed data, as produced by "
-        "`kbagent storage unload-table --file-type parquet --download`.",
-    ),
-    duckdb_path: str = typer.Option("data/juncture.duckdb", "--duckdb-path"),
-    source_dialect: str = typer.Option(
-        "snowflake",
-        "--source-dialect",
-        help="Source SQL dialect (snowflake, bigquery, redshift...); use 'duckdb' to skip translation.",
-    ),
-    target_dialect: str = typer.Option("duckdb", "--target-dialect"),
-    validate: bool = typer.Option(
-        False,
-        "--validate",
-        help="Pre-flight check only: parse every statement and resolve seed paths, "
-        "but don't write any project files. Exit code 1 if parse errors or missing seeds.",
-    ),
-) -> None:
-    """Convert a kbagent sync-pull transformation directory into a Juncture project."""
-    from juncture.migration import migrate_keboola_sync_pull, validate_sync_pull_migration
-
-    if validate:
-        report = validate_sync_pull_migration(
-            transformation_dir=source,
-            seeds_source=seeds,
-            source_dialect=source_dialect,
-            target_dialect=target_dialect,
-        )
-        table = Table(title=f"Validation — {report.transformation_name}")
-        table.add_column("Metric")
-        table.add_column("Value", justify="right")
-        table.add_row("SQL lines", f"{report.sql_line_count:,}")
-        table.add_row("Statements", str(report.statement_count))
-        parse_style = "red" if report.parse_errors else "green"
-        table.add_row("Parse errors", f"[{parse_style}]{len(report.parse_errors)}[/]")
-        table.add_row("Input seeds expected", str(len(report.input_seeds_expected)))
-        missing_style = "red" if report.seeds_missing else "green"
-        table.add_row("Missing seeds", f"[{missing_style}]{len(report.seeds_missing)}[/]")
-        table.add_row("Output tables", str(len(report.output_tables)))
-        console.print(table)
-
-        if report.parse_errors:
-            console.print("\n[bold red]First 5 parse errors:[/]")
-            for idx, msg in report.parse_errors[:5]:
-                console.print(f"  [dim]#{idx}[/] {msg.splitlines()[0][:150]}")
-            if len(report.parse_errors) > 5:
-                console.print(f"  [dim]... +{len(report.parse_errors) - 5} more[/]")
-
-        if report.seeds_missing:
-            console.print("\n[bold red]Missing seeds:[/]")
-            for dest in report.seeds_missing[:10]:
-                expected = report.input_seeds_expected.get(dest, "?")
-                console.print(f"  [dim]{dest}[/] (source: {expected})")
-            if len(report.seeds_missing) > 10:
-                console.print(f"  [dim]... +{len(report.seeds_missing) - 10} more[/]")
-
-        ok = not report.parse_errors and not report.seeds_missing
-        console.print(
-            Panel(
-                "[green]Validation passed — ready to migrate.[/]"
-                if ok
-                else "[yellow]Validation found issues. Fix them or accept partial migration "
-                "(see `--continue-on-error` once migrated).[/]",
-                title="migrate-sync-pull --validate",
-                border_style="green" if ok else "yellow",
-            )
-        )
-        if not ok:
-            raise typer.Exit(code=1)
-        return
-
-    result = migrate_keboola_sync_pull(
-        transformation_dir=source,
-        output_dir=output,
-        seeds_source=seeds,
-        duckdb_path=duckdb_path,
-        source_dialect=source_dialect,
-        target_dialect=target_dialect,
-    )
-    table = Table(title=f"Migrated transformation {result.transformation_name!r}")
-    table.add_column("Metric")
-    table.add_column("Value", justify="right")
-    table.add_row("SQL lines", f"{result.sql_line_count:,}")
-    table.add_row(
-        "SQL translated", f"{source_dialect} -> {target_dialect}" if result.sql_translated else "no"
-    )
-    table.add_row("Input seeds linked", str(result.seeds_linked))
-    table.add_row("Output tables", str(len(result.output_tables)))
-    table.add_row("Missing seeds", str(len(result.seeds_missing)))
-    console.print(table)
-    console.print(
-        Panel(
-            f"[green]Project at[/] {result.project_path}\n\n"
-            f"Next: [bold]juncture compile --project {result.project_path}[/]",
-            title="migrate-sync-pull",
-            border_style="green",
-        )
-    )
-
-
-@app.command()
-def sanitize(
-    project: Path = typer.Option(
-        Path("."),
-        "--project",
-        "-p",
-        help="Juncture project directory whose models/*.sql files will be re-translated in place.",
-    ),
-    source_dialect: str = typer.Option("snowflake", "--from-dialect"),
-    target_dialect: str = typer.Option("duckdb", "--to-dialect"),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Report which files would change without writing them.",
-    ),
-    schema_aware: bool = typer.Option(
-        True,
-        "--schema-aware/--no-schema-aware",
-        help="Load seed schemas from the project and feed them into translate_sql "
-        "so VARCHAR/numeric/timestamp mismatches get TRY_CAST wrappers automatically.",
-    ),
-) -> None:
-    """Re-translate all ``models/*.sql`` files through ``translate_sql``.
-
-    Intended for projects produced by an older migration pass where Snowflake
-    SQL was copied verbatim and DuckDB chokes on dialect-specific constructs
-    (implicit VARCHAR coercion in CASE, etc.). The same translator the migrator
-    now runs by default is applied to every SQL model, statement by statement.
-
-    With ``--schema-aware`` (default) the seed schemas are read from the
-    project; ``translate_sql`` then uses them to resolve VARCHAR-on-typed
-    comparisons, aggregates over VARCHAR, and ``timestamp ± integer``
-    arithmetic into explicit ``TRY_CAST`` / ``INTERVAL`` forms.
-    """
-    models_dir = project / "models"
-    if not models_dir.is_dir():
-        console.print(f"[red]No models/ directory at {models_dir}[/]")
-        raise typer.Exit(code=1)
-
-    schema: dict[str, dict[str, str]] | None = None
-    if schema_aware:
-        try:
-            project_obj = Project.load(project)
-            schema = project_obj.seed_schemas()
-        except Exception as exc:
-            # Missing juncture.yaml or unreadable seeds fall back to
-            # un-annotated sanitize — the user still gets dialect-level
-            # translation, just without type-coercion fixes.
-            console.print(f"[yellow]Schema-aware mode unavailable: {exc}[/]")
-            console.print("[dim]Falling back to syntax-only translation.[/]")
-            schema = None
-
-    table = Table(title=f"Sanitize {source_dialect} -> {target_dialect}")
-    table.add_column("Model")
-    table.add_column("Before", justify="right")
-    table.add_column("After", justify="right")
-    table.add_column("Changed", justify="center")
-
-    changed_count = 0
-    total = 0
-    for sql_file in sorted(models_dir.glob("*.sql")):
-        original = sql_file.read_text()
-        translated = translate_sql(
-            original,
-            read=source_dialect,
-            write=target_dialect,
-            schema=schema,
-        )
-        changed = translated != original
-        total += 1
-        if changed:
-            changed_count += 1
-        mark = "[yellow]yes[/]" if changed else "no"
-        table.add_row(sql_file.name, f"{len(original):,}", f"{len(translated):,}", mark)
-        if changed and not dry_run:
-            sql_file.write_text(translated)
-
-    console.print(table)
-    summary = f"{changed_count}/{total} model(s) updated"
-    if schema:
-        summary += f" (schema-aware, {len(schema)} seed(s) annotated)"
-    if dry_run:
-        summary += " (dry-run, nothing written)"
-    console.print(Panel(summary, title="sanitize", border_style="green"))
-
-
-@app.command("split-execute")
-def split_execute(
-    sql_path: Path = typer.Argument(
-        ...,
-        help="Multi-statement EXECUTE SQL file to split (e.g. models/main_task.sql).",
-    ),
-    out_dir: Path = typer.Option(
-        ...,
-        "--out",
-        "-o",
-        help="Target directory for generated models. Created if missing.",
-    ),
-    source_dialect: str = typer.Option(
-        "duckdb",
-        "--source-dialect",
-        help="Dialect for SQLGlot parse (normally duckdb after sync-pull translation).",
-    ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="List what would be created without writing files.",
-    ),
-) -> None:
-    """Split a multi-statement EXECUTE script into CTAS mini-models + residual.
-
-    Each ``CREATE [OR REPLACE] TABLE|VIEW X AS SELECT ...`` becomes its own
-    ``<X>.sql`` model with intra-script table references rewritten to
-    ``{{ ref('X') }}``. Statements that can't be expressed as standalone
-    CTAS (``INSERT``, ``UPDATE``, ``DELETE``, ``ALTER``, ``SET``, ``USE``)
-    land in ``_residual.sql`` with ``materialization: execute`` and
-    ``LIMIT 0`` ref hints so Juncture can infer its depends_on.
-    """
-    from juncture.migration.split_execute import SplitExecuteError, split_execute_script
-
-    sql = sql_path.read_text()
-    try:
-        result = split_execute_script(sql, dialect=source_dialect)
-    except SplitExecuteError as exc:
-        console.print(f"[red]split-execute failed:[/] {exc}")
-        raise typer.Exit(code=1) from exc
-
-    summary = Table(title=f"split-execute — {sql_path.name}")
-    summary.add_column("Model")
-    summary.add_column("Materialization")
-    summary.add_column("Source idx", justify="right")
-    for m in result.models:
-        summary.add_row(m.name, m.materialization, str(m.source_index))
-    if result.residual:
-        summary.add_row("_residual", "execute", "—")
-    console.print(summary)
-
-    if dry_run:
-        console.print(
-            Panel(
-                f"Dry-run: would create {len(result.models)} model(s)"
-                + (" + _residual" if result.residual else "")
-                + f" in {out_dir}",
-                title="split-execute",
-                border_style="cyan",
-            )
-        )
-        return
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    for m in result.models:
-        body = m.body.rstrip(";").strip()
-        (out_dir / f"{m.name}.sql").write_text(
-            f"-- Auto-generated by `juncture split-execute` from {sql_path.name}.\n"
-            f"-- Source statement index: {m.source_index}\n"
-            f"{body}\n"
-        )
-
-    schema_entries: list[str] = []
-    for m in result.models:
-        schema_entries.append(
-            f"  - name: {m.name}\n"
-            f"    materialization: {m.materialization}\n"
-            f"    config:\n"
-            f"      generated_by: split-execute\n"
-            f"      source_index: {m.source_index}\n"
-        )
-
-    if result.residual:
-        # Prepend LIMIT 0 ref() lines so Juncture infers depends_on from
-        # the residual body. LIMIT 0 is a metadata-only scan in DuckDB.
-        ref_loads = "".join(
-            f"SELECT 1 FROM {{{{ ref('{name}') }}}} LIMIT 0;\n" for name in result.residual_depends_on
-        )
-        (out_dir / "_residual.sql").write_text(
-            f"-- Auto-generated by `juncture split-execute` from {sql_path.name}.\n"
-            f"-- Non-CTAS statements (INSERT/UPDATE/DELETE/DDL/DML).\n"
-            f"-- LIMIT 0 ref() hints seed Juncture's DAG depends_on.\n"
-            f"{ref_loads}"
-            f"\n"
-            f"{result.residual}\n"
-        )
-        schema_entries.append(
-            "  - name: _residual\n"
-            "    materialization: execute\n"
-            "    config:\n"
-            "      generated_by: split-execute\n"
-        )
-
-    (out_dir / "schema.yml").write_text("models:\n" + "\n".join(schema_entries))
-
-    console.print(
-        Panel(
-            f"[green]Split complete:[/]\n"
-            f"  {len(result.models)} CTAS model(s) written to {out_dir}\n"
-            f"  {'1 residual (depends on ' + str(len(result.residual_depends_on)) + ' models)' if result.residual else 'no residual'}\n\n"
-            f"Next: [bold]juncture compile --project <project>[/] to see the new DAG.",
-            title="split-execute",
-            border_style="green",
-        )
-    )
-
-
-@app.command()
+@app.command(rich_help_panel="Core workflow")
 def web(
     project: Path = typer.Option(Path("."), "--project", "-p", help="Project directory."),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
@@ -835,83 +509,112 @@ def web(
     serve(project_path, host=host, port=port)
 
 
-@app.command()
-def diagnostics(
+# ---------------------------------------------------------------------------
+# Deprecated aliases — kept for backwards compatibility with scripts that
+# use the old flat command names. Hidden from --help; print a deprecation
+# warning at runtime. Will be removed in a future minor release.
+# ---------------------------------------------------------------------------
+
+
+@app.command("translate", hidden=True, deprecated=True)
+def _compat_translate(
+    sql: str = typer.Argument(..., help="SQL snippet or path to .sql file."),
+    read: str = typer.Option("snowflake", "--from", "-f"),
+    write: str = typer.Option("duckdb", "--to", "-t"),
+) -> None:
+    """Deprecated: use ``juncture sql translate`` instead."""
+    from juncture.cli.sql import translate as _impl
+
+    _impl(sql=sql, read=read, write=write)
+
+
+@app.command("sanitize", hidden=True, deprecated=True)
+def _compat_sanitize(
+    project: Path = typer.Option(Path("."), "--project", "-p"),
+    source_dialect: str = typer.Option("snowflake", "--from-dialect"),
+    target_dialect: str = typer.Option("duckdb", "--to-dialect"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    schema_aware: bool = typer.Option(True, "--schema-aware/--no-schema-aware"),
+) -> None:
+    """Deprecated: use ``juncture sql sanitize`` instead."""
+    from juncture.cli.sql import sanitize as _impl
+
+    _impl(
+        project=project,
+        source_dialect=source_dialect,
+        target_dialect=target_dialect,
+        dry_run=dry_run,
+        schema_aware=schema_aware,
+    )
+
+
+@app.command("split-execute", hidden=True, deprecated=True)
+def _compat_split_execute(
+    sql_path: Path = typer.Argument(...),
+    out_dir: Path = typer.Option(..., "--out", "-o"),
+    source_dialect: str = typer.Option("duckdb", "--source-dialect"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Deprecated: use ``juncture sql split`` instead."""
+    from juncture.cli.sql import split as _impl
+
+    _impl(sql_path=sql_path, out_dir=out_dir, source_dialect=source_dialect, dry_run=dry_run)
+
+
+@app.command("migrate-keboola", hidden=True, deprecated=True)
+def _compat_migrate_keboola(
+    config: Path = typer.Argument(...),
+    output: Path = typer.Option(Path("migrated"), "--output", "-o"),
+    backend: str = typer.Option("duckdb", "--backend", "-b"),
+) -> None:
+    """Deprecated: use ``juncture migrate keboola`` instead."""
+    from juncture.cli.migrate import keboola as _impl
+
+    _impl(config=config, output=output, backend=backend)
+
+
+@app.command("migrate-sync-pull", hidden=True, deprecated=True)
+def _compat_migrate_sync_pull(
+    source: Path = typer.Argument(...),
+    output: Path = typer.Option(Path("migrated-sync-pull"), "--output", "-o"),
+    seeds: Path = typer.Option(..., "--seeds"),
+    duckdb_path: str = typer.Option("data/juncture.duckdb", "--duckdb-path"),
+    source_dialect: str = typer.Option("snowflake", "--source-dialect"),
+    target_dialect: str = typer.Option("duckdb", "--target-dialect"),
+    validate: bool = typer.Option(False, "--validate"),
+) -> None:
+    """Deprecated: use ``juncture migrate sync-pull`` instead."""
+    from juncture.cli.migrate import sync_pull as _impl
+
+    _impl(
+        source=source,
+        output=output,
+        seeds=seeds,
+        duckdb_path=duckdb_path,
+        source_dialect=source_dialect,
+        target_dialect=target_dialect,
+        validate=validate,
+    )
+
+
+@app.command("diagnostics", hidden=True, deprecated=True)
+def _compat_diagnostics(
     project: Path = typer.Option(Path("."), "--project", "-p"),
     select: list[str] = typer.Option([], "--select", "-s"),
     connection: str | None = typer.Option(None, "--connection", "-c"),
     threads: int = typer.Option(4, "--threads", "-t"),
-    show_fixes: bool = typer.Option(
-        True,
-        "--show-fixes/--no-show-fixes",
-        help="Print the fix_hint template next to each error bucket.",
-    ),
+    show_fixes: bool = typer.Option(True, "--show-fixes/--no-show-fixes"),
 ) -> None:
-    """Run the project with ``--continue-on-error`` and classify every error.
+    """Deprecated: use ``juncture debug diagnostics`` instead."""
+    from juncture.cli.debug_cmds import diagnostics as _impl
 
-    Migration triage shortcut: spawns the runner in continue-on-error
-    mode, collects per-statement errors from every EXECUTE model, feeds
-    them through :func:`juncture.diagnostics.classify_error`, and
-    prints a bucketised summary ("15 type_mismatch, 4 conversion, 2
-    missing_object"). Intended to be the first command run against a
-    freshly migrated body; once every bucket is down to a handful of
-    entries you switch back to a normal ``juncture run``.
-    """
-    from collections import Counter
-
-    from juncture.diagnostics import classify_statement_errors
-
-    request = RunRequest(
-        project_path=project.resolve(),
+    _impl(
+        project=project,
         select=select,
         connection=connection,
         threads=threads,
-        continue_on_error=True,
-        run_tests=False,
+        show_fixes=show_fixes,
     )
-    report = Runner().run(request)
-
-    # Aggregate every statement_error across every model in this run.
-    all_errors: list[object] = []
-    for model_run in report.models.runs:
-        if model_run.result is None:
-            continue
-        all_errors.extend(model_run.result.statement_errors)
-
-    if not all_errors:
-        console.print(
-            Panel(
-                "[green]Clean run — no statement errors to classify.[/]",
-                title="juncture diagnostics",
-                border_style="green",
-            )
-        )
-        return
-
-    classifications = classify_statement_errors(all_errors)
-    by_bucket: Counter[str] = Counter(c.bucket.value for c in classifications)
-
-    summary = Table(title="Error buckets")
-    summary.add_column("Bucket")
-    summary.add_column("Count", justify="right")
-    for bucket, count in by_bucket.most_common():
-        summary.add_row(bucket, str(count))
-    console.print(summary)
-
-    if show_fixes:
-        console.print("\n[bold]Representative error per subcategory:[/]\n")
-        seen_subs: set[str] = set()
-        for c in classifications:
-            if c.subcategory in seen_subs:
-                continue
-            seen_subs.add(c.subcategory)
-            console.print(
-                f"[bold]{c.bucket.value}/{c.subcategory}[/]\n"
-                f"  error: {c.error_message.splitlines()[0][:150]}\n"
-                f"  fix:   [green]{c.fix_hint}[/]\n"
-            )
-
-    raise typer.Exit(code=0)
 
 
 if __name__ == "__main__":
