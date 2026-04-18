@@ -211,10 +211,7 @@ def split(
             f"{result.residual}\n"
         )
         schema_entries.append(
-            "  - name: _residual\n"
-            "    materialization: execute\n"
-            "    config:\n"
-            "      generated_by: sql-split\n"
+            "  - name: _residual\n    materialization: execute\n    config:\n      generated_by: sql-split\n"
         )
 
     (out_dir / "schema.yml").write_text("models:\n" + "\n".join(schema_entries))

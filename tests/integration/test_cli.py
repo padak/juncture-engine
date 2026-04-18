@@ -119,9 +119,7 @@ def test_sql_sanitize_new_path(tmp_path: Path) -> None:
 
 def test_sql_split_new_path(tmp_path: Path) -> None:
     sql_file = tmp_path / "task.sql"
-    sql_file.write_text(
-        "CREATE TABLE a AS SELECT 1 AS id;\nCREATE TABLE b AS SELECT id FROM a;\n"
-    )
+    sql_file.write_text("CREATE TABLE a AS SELECT 1 AS id;\nCREATE TABLE b AS SELECT id FROM a;\n")
     out = tmp_path / "split_out"
     result = runner.invoke(
         app,
