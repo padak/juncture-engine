@@ -135,3 +135,65 @@ def test_test_subcommand(tmp_path: Path) -> None:
     runner.invoke(app, ["run", "--project", str(target)])
     result = runner.invoke(app, ["test", "--project", str(target)])
     assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# --profile flag (profiles: block in juncture.yaml)
+# ---------------------------------------------------------------------------
+
+
+def _profiles_project(root: Path) -> None:
+    """Scaffold a minimal profiles project with dev + prod env DuckDB paths."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "models").mkdir()
+    (root / "data").mkdir()
+    (root / "juncture.yaml").write_text(
+        """
+name: profiles_proj
+profile: dev
+default_schema: main
+connections:
+  warehouse:
+    type: duckdb
+    path: data/base.duckdb
+profiles:
+  dev:
+    connections:
+      warehouse:
+        path: data/dev.duckdb
+  prod:
+    connections:
+      warehouse:
+        path: data/prod.duckdb
+""".lstrip()
+    )
+    (root / "models" / "ping.sql").write_text("SELECT 1 AS ok")
+
+
+def test_run_uses_default_profile_from_yaml(tmp_path: Path) -> None:
+    """Without --profile, the top-level ``profile:`` field picks dev."""
+    root = tmp_path / "p1"
+    _profiles_project(root)
+    result = runner.invoke(app, ["run", "--project", str(root)])
+    assert result.exit_code == 0, result.stdout
+    assert (root / "data" / "dev.duckdb").exists()
+    assert not (root / "data" / "prod.duckdb").exists()
+
+
+def test_run_with_profile_flag_overrides_yaml(tmp_path: Path) -> None:
+    """--profile prod materializes against the prod DuckDB file."""
+    root = tmp_path / "p2"
+    _profiles_project(root)
+    result = runner.invoke(app, ["run", "--project", str(root), "--profile", "prod"])
+    assert result.exit_code == 0, result.stdout
+    assert (root / "data" / "prod.duckdb").exists()
+    assert not (root / "data" / "dev.duckdb").exists()
+
+
+def test_run_with_unknown_profile_fails(tmp_path: Path) -> None:
+    root = tmp_path / "p3"
+    _profiles_project(root)
+    result = runner.invoke(app, ["run", "--project", str(root), "--profile", "missing"])
+    assert result.exit_code != 0
+    message = str(result.exception) if result.exception else (result.stdout + (result.stderr or ""))
+    assert "profile 'missing' is not declared" in message

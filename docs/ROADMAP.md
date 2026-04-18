@@ -153,6 +153,16 @@ migration from ~26 repair rounds to 2–3.
       is auto-registered as a Jinja global so models call
       `{{ my_date(col) }}` without `{% import %}`. Powers the "define
       a rule once, use everywhere" story (VISION §Problem 2).
+- [x] **Profiles (`profiles:` block)** — named overlays over
+      `juncture.yaml` so one project describes several environments
+      (local DuckDB, shared staging, prod Snowflake). Per-key merge on
+      `vars:` and `connections.<name>:`, wholesale replace on scalars.
+      `--profile` CLI flag + `JUNCTURE_PROFILE` env var + top-level
+      `profile:` field, in that precedence. Unknown profile name fails
+      fast. Backward-compatible: projects without a `profiles:` block
+      keep the legacy `profile: <connection_name>` behaviour. Unblocks
+      kbagent-branch per-schema dev/prod split (see
+      [`docs/CONFIGURATION.md`](CONFIGURATION.md#profiles-profiles-block)).
 - [ ] Advanced selectors: `path:marts/`, `state:modified+`.
 - [ ] Model unit tests (input → expected output in YAML).
 - [ ] Structured JSON logging mode for ingestion.

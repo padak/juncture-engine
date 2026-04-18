@@ -80,6 +80,99 @@ class ConnectionConfig:
     params: dict[str, Any] = field(default_factory=dict)
 
 
+_PROFILE_ENV = "JUNCTURE_PROFILE"
+
+# Top-level keys the profile overlay may replace wholesale (scalar keys).
+# Skipped: ``connections`` and ``vars`` have per-key merge semantics below;
+# ``profiles``, ``name``, ``version``, ``profile`` are never overlaid.
+_PROFILE_SCALAR_KEYS: tuple[str, ...] = (
+    "default_schema",
+    "default_materialization",
+    "models_path",
+    "tests_path",
+    "macros_path",
+    "seeds_path",
+    "jinja",
+    "model_defaults",
+)
+
+
+def _apply_profile_overlay(raw: dict[str, Any], profile_name: str) -> dict[str, Any]:
+    """Merge ``raw['profiles'][profile_name]`` into ``raw`` in-place-ish.
+
+    Returns a new top-level dict. Merge rules:
+
+    - ``vars``: shallow dict merge; profile keys override top-level.
+    - ``connections.<name>``: per-connection shallow merge; profile can override
+      individual params (``path``, ``database``, ``type``, ...) without the
+      user having to repeat the full connection block.
+    - Scalars in :data:`_PROFILE_SCALAR_KEYS`: profile replaces top-level.
+    - Unknown keys inside the profile are copied through verbatim so that
+      future additions to ``ProjectConfig`` work without touching this
+      function.
+
+    ``profile_name`` MUST exist in ``raw['profiles']`` — the caller has
+    already validated this.
+    """
+    profiles = raw.get("profiles") or {}
+    overlay = profiles[profile_name]
+    if not isinstance(overlay, dict):
+        raise ProjectError(f"profiles.{profile_name}: expected a mapping, got {type(overlay).__name__}")
+
+    merged: dict[str, Any] = {k: v for k, v in raw.items() if k != "profiles"}
+
+    # vars: shallow merge
+    if "vars" in overlay:
+        base_vars = dict(merged.get("vars") or {})
+        base_vars.update(overlay["vars"] or {})
+        merged["vars"] = base_vars
+
+    # connections: per-connection shallow merge
+    if "connections" in overlay:
+        base_conns = dict(merged.get("connections") or {})
+        for conn_name, conn_overlay in (overlay["connections"] or {}).items():
+            if not isinstance(conn_overlay, dict):
+                raise ProjectError(
+                    f"profiles.{profile_name}.connections.{conn_name}: "
+                    f"expected a mapping, got {type(conn_overlay).__name__}"
+                )
+            base = dict(base_conns.get(conn_name) or {})
+            base.update(conn_overlay)
+            base_conns[conn_name] = base
+        merged["connections"] = base_conns
+
+    # scalars + anything else the profile set explicitly
+    for key, value in overlay.items():
+        if key in ("vars", "connections"):
+            continue
+        merged[key] = value
+
+    return merged
+
+
+def _resolve_profile(
+    *,
+    explicit: str | None,
+    raw_profile_field: str | None,
+    profiles_block_present: bool,
+) -> str | None:
+    """Pick the active profile name from the three sources, in priority.
+
+    Order: explicit arg > ``JUNCTURE_PROFILE`` env var > top-level
+    ``profile:`` YAML field. Returns ``None`` when nothing is set OR when
+    no ``profiles:`` block exists (backward compat: legacy projects with
+    ``profile: default`` and no ``profiles:`` block must keep working).
+    """
+    if not profiles_block_present:
+        return None
+    if explicit is not None:
+        return explicit
+    env_profile = os.environ.get(_PROFILE_ENV)
+    if env_profile:
+        return env_profile
+    return raw_profile_field
+
+
 @dataclass(kw_only=True)
 class ProjectConfig:
     """Parsed ``juncture.yaml``."""
@@ -87,6 +180,13 @@ class ProjectConfig:
     name: str
     version: str = "0.1.0"
     profile: str = "default"
+    #: Active profile name after overlay resolution. ``None`` when no
+    #: ``profiles:`` block is present or none was selected. Exposed so
+    #: the CLI, web UI, and logs can show which environment a run used.
+    active_profile: str | None = None
+    #: Names of all profiles declared in ``juncture.yaml``. Empty when the
+    #: project doesn't use the profiles feature.
+    available_profiles: list[str] = field(default_factory=list)
     connections: dict[str, ConnectionConfig] = field(default_factory=dict)
     models_path: Path = Path("models")
     tests_path: Path = Path("tests")
@@ -99,12 +199,37 @@ class ProjectConfig:
     jinja: bool = False
 
     @classmethod
-    def from_file(cls, path: Path) -> ProjectConfig:
+    def from_file(cls, path: Path, *, profile: str | None = None) -> ProjectConfig:
+        """Load and parse a ``juncture.yaml``.
+
+        ``profile`` — optional profile name overriding the ``profile:``
+        field in the YAML and the ``JUNCTURE_PROFILE`` env var. Raises
+        :class:`ProjectError` when the resolved name is not declared in
+        the ``profiles:`` block.
+        """
         raw_text = path.read_text()
         raw = yaml.safe_load(raw_text)
         if not isinstance(raw, dict):
             raise ProjectError(f"{path}: expected a mapping at the top level")
         raw = _interpolate_env(raw)
+
+        profiles_block = raw.get("profiles") or {}
+        if profiles_block and not isinstance(profiles_block, dict):
+            raise ProjectError(f"{path}: 'profiles' must be a mapping of name -> overlay")
+        available_profiles = sorted(profiles_block.keys()) if profiles_block else []
+
+        active_profile = _resolve_profile(
+            explicit=profile,
+            raw_profile_field=raw.get("profile"),
+            profiles_block_present=bool(profiles_block),
+        )
+        if active_profile is not None:
+            if active_profile not in profiles_block:
+                raise ProjectError(
+                    f"{path}: profile '{active_profile}' is not declared under "
+                    f"'profiles:'. Available: {', '.join(available_profiles) or '(none)'}"
+                )
+            raw = _apply_profile_overlay(raw, active_profile)
 
         connections_raw = raw.get("connections", {})
         connections = {
@@ -120,6 +245,8 @@ class ProjectConfig:
             name=raw["name"],
             version=raw.get("version", "0.1.0"),
             profile=raw.get("profile", "default"),
+            active_profile=active_profile,
+            available_profiles=available_profiles,
             connections=connections,
             models_path=_p("models_path", "models"),
             tests_path=_p("tests_path", "tests"),
@@ -186,7 +313,13 @@ class Project:
     _jinja_macros: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, root: Path | str, *, run_vars: dict[str, Any] | None = None) -> Project:
+    def load(
+        cls,
+        root: Path | str,
+        *,
+        run_vars: dict[str, Any] | None = None,
+        profile: str | None = None,
+    ) -> Project:
         """Load a project from disk.
 
         ``run_vars`` is merged into ``juncture.yaml``'s ``vars:`` block
@@ -196,13 +329,17 @@ class Project:
         defaults while Python models see the override — a subtle
         inconsistency that breaks the "one external param, same
         everywhere" story.
+
+        ``profile`` — optional profile name (see :meth:`ProjectConfig.from_file`).
+        Priority: explicit arg > ``JUNCTURE_PROFILE`` env var > top-level
+        ``profile:`` in ``juncture.yaml``.
         """
         root = Path(root).resolve()
         _load_dotenv_if_present(root)
         config_path = root / "juncture.yaml"
         if not config_path.exists():
             raise ProjectError(f"No juncture.yaml in {root}")
-        config = ProjectConfig.from_file(config_path)
+        config = ProjectConfig.from_file(config_path, profile=profile)
         if run_vars:
             config.vars = {**config.vars, **run_vars}
 
