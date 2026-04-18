@@ -538,6 +538,12 @@ def sanitize(
         "--dry-run",
         help="Report which files would change without writing them.",
     ),
+    schema_aware: bool = typer.Option(
+        True,
+        "--schema-aware/--no-schema-aware",
+        help="Load seed schemas from the project and feed them into translate_sql "
+        "so VARCHAR/numeric/timestamp mismatches get TRY_CAST wrappers automatically.",
+    ),
 ) -> None:
     """Re-translate all ``models/*.sql`` files through ``translate_sql``.
 
@@ -545,11 +551,29 @@ def sanitize(
     SQL was copied verbatim and DuckDB chokes on dialect-specific constructs
     (implicit VARCHAR coercion in CASE, etc.). The same translator the migrator
     now runs by default is applied to every SQL model, statement by statement.
+
+    With ``--schema-aware`` (default) the seed schemas are read from the
+    project; ``translate_sql`` then uses them to resolve VARCHAR-on-typed
+    comparisons, aggregates over VARCHAR, and ``timestamp ± integer``
+    arithmetic into explicit ``TRY_CAST`` / ``INTERVAL`` forms.
     """
     models_dir = project / "models"
     if not models_dir.is_dir():
         console.print(f"[red]No models/ directory at {models_dir}[/]")
         raise typer.Exit(code=1)
+
+    schema: dict[str, dict[str, str]] | None = None
+    if schema_aware:
+        try:
+            project_obj = Project.load(project)
+            schema = project_obj.seed_schemas()
+        except Exception as exc:
+            # Missing juncture.yaml or unreadable seeds fall back to
+            # un-annotated sanitize — the user still gets dialect-level
+            # translation, just without type-coercion fixes.
+            console.print(f"[yellow]Schema-aware mode unavailable: {exc}[/]")
+            console.print("[dim]Falling back to syntax-only translation.[/]")
+            schema = None
 
     table = Table(title=f"Sanitize {source_dialect} -> {target_dialect}")
     table.add_column("Model")
@@ -561,7 +585,12 @@ def sanitize(
     total = 0
     for sql_file in sorted(models_dir.glob("*.sql")):
         original = sql_file.read_text()
-        translated = translate_sql(original, read=source_dialect, write=target_dialect)
+        translated = translate_sql(
+            original,
+            read=source_dialect,
+            write=target_dialect,
+            schema=schema,
+        )
         changed = translated != original
         total += 1
         if changed:
@@ -573,6 +602,8 @@ def sanitize(
 
     console.print(table)
     summary = f"{changed_count}/{total} model(s) updated"
+    if schema:
+        summary += f" (schema-aware, {len(schema)} seed(s) annotated)"
     if dry_run:
         summary += " (dry-run, nothing written)"
     console.print(Panel(summary, title="sanitize", border_style="green"))
