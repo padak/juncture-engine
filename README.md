@@ -1,96 +1,196 @@
 # Juncture
 
-> Multi-backend SQL + Python transformation engine. Local-first, DuckDB-native, Keboola-compatible.
+> Multi-backend SQL + Python transformation engine. Local-first,
+> DuckDB-native.
 
-**Status:** early alpha (`0.1.0a0`). See [`docs/DESIGN.md`](docs/DESIGN.md)
-for architecture, [`docs/RESEARCH.md`](docs/RESEARCH.md) for competitive
-analysis, [`docs/ROADMAP.md`](docs/ROADMAP.md) for what's next.
+**Status:** early alpha (`0.1.0a0`). Engine runs real workloads on
+DuckDB end-to-end (pilot migration: 208 parquet seeds x 374 SQL
+statements). Snowflake / BigQuery / Postgres adapters are Phase 2 —
+stub only today.
 
-## Why?
-
-Today, Keboola splits data transformations across four components:
-`snowflake-transformation`, `python-transformation`, `duckdb-transformation`,
-`dbt-transformation`. None talks to the others, code lives in Keboola (not
-git), mixing SQL and Python is impossible, parallelism is manual, and
-backend arbitrage is unheard of.
-
-Juncture unifies them into one engine with these guarantees:
-
-- **SQL and Python in the same DAG** — a Python `@transform` can consume a
-  SQL model and a SQL model can consume a Python output.
-- **Local-first** — runs on a laptop against DuckDB with zero network
-  access. Same project runs in Keboola against Snowflake or BigQuery.
-- **Multi-backend via SQLGlot** — translate SQL between DuckDB, Snowflake,
-  BigQuery, Postgres.
-- **Parallelism by default** — independent models run concurrently, layer
-  by layer. A 30-update block can drop from 30x serial to 1x parallel.
-- **Data tests are first class** — `not_null`, `unique`, `relationships`,
-  `accepted_values` ship out of the box.
-- **Agent-friendly** — an Anthropic Skill ships in the repo
-  ([`skills/juncture/SKILL.md`](skills/juncture/SKILL.md)) so Claude or any
-  agent can author, run, debug Juncture projects directly.
+One engine that replaces Keboola's four legacy transformation
+components (`snowflake-transformation`, `python-transformation`,
+`duckdb-transformation`, `dbt-transformation`). Code lives in git, SQL
+and Python share one DAG, data tests are first-class, and every
+workflow is callable from a stable JSON CLI built for agents.
 
 ## Install
 
 ```bash
-git clone https://github.com/keboola/new-transformations juncture
+git clone git@github.com:padak/juncture-engine.git juncture
 cd juncture
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,pandas]"
 ```
 
-## 60-second tour
+## See it work first (60 seconds)
+
+The fastest way to understand what Juncture does is to run an example
+and open the browser UI. No scaffolding, no warehouse credentials.
 
 ```bash
-juncture init demo               # scaffold
-cd demo
-juncture compile                 # show the DAG
-juncture run --test              # run models, then data tests
-juncture docs                    # emit manifest.json (lineage)
-juncture translate 'SELECT TO_VARCHAR(42)' --from snowflake --to duckdb
+# Build all models + run data tests against DuckDB.
+juncture run --project examples/tutorial_shop --test
+
+# Open the DAG + source viewer + run history.
+juncture web --project examples/tutorial_shop
+# -> http://127.0.0.1:8765
 ```
 
-Try the examples:
+Then try a runtime parameter override — no SQL edits:
 
 ```bash
-cd examples/simple   && juncture run --test
-cd examples/ecommerce && juncture run --test   # SQL + Python in one DAG
+juncture run --project examples/tutorial_shop \
+  --var as_of=2026-01-20 --var lookback_days=7
 ```
 
-## Project layout
+## Build your own project
 
-```
-my_project/
-├── juncture.yaml           # config + connections
-├── models/
-│   ├── stg_orders.sql
-│   ├── stg_customers.sql
-│   ├── customer_segment.py   # Python @transform
-│   └── schema.yml            # column descriptions + data tests
-```
+Open [`docs/TUTORIAL.md`](docs/TUTORIAL.md). Four levels, each adds one
+idea on top of the previous:
 
-A SQL model is a `.sql` file with one `SELECT`, referencing upstream
-models via `{{ ref('stg_orders') }}`. A Python model is a function
-decorated with `@transform` returning a DataFrame.
+| Level | What you learn |
+|---|---|
+| **L1** | `juncture init` → drop CSVs → first `ref()` → `juncture run` |
+| **L2** | `@transform` Python models in the same DAG as SQL |
+| **L3** | `macros/*.sql` (shared expressions) + ephemeral models (shared dimensions) |
+| **L4** | External parameters via `--var` and `juncture.yaml vars:` |
+
+The tutorial's companion project lives at
+[`examples/tutorial_shop/`](examples/tutorial_shop/) so you can
+copy-paste-compare while you read.
+
+## What ships today
+
+### Engine (runs on DuckDB)
+
+- **SQL + Python in one DAG.** A Python `@transform` can `ref()` a SQL
+  model and vice versa. One `juncture run` builds everything.
+- **Materializations:** `table`, `view`, `incremental` (with
+  `_juncture_state` checkpoint), `ephemeral`, `execute` (multi-statement
+  as-is — used by migration tooling).
+- **Parallelism by default.** Independent models run concurrently, layer
+  by layer. Intra-script parallel EXECUTE available for migrated bodies
+  (known race — forced to `parallelism: 1` for now).
+- **Data tests are first-class.** `not_null`, `unique`, `relationships`,
+  `accepted_values`, plus custom SQL tests under `tests/`.
+- **Seeds.** Single CSV (`seeds/*.csv`) or parquet directories
+  (`seeds/bucket/table/*.parquet`) with hybrid full-scan / sample type
+  inference and a sentinel detector for Keboola-style string columns.
+- **Jinja macros** (when `jinja: true`): every `{% macro %}` under
+  `macros/` is globally available without `{% import %}` — dbt-style UX.
+- **Model disable toggle**: `disabled: true` in `schema.yml` or
+  `--disable a,b` / `--enable-only x,y` at runtime.
+- **Governance fields** in `schema.yml`: `owner`, `team`, `criticality`,
+  `sla.freshness_hours`, `docs`, `consumers`. Seeds carry `pii`,
+  `retention_days`, `source_system`.
+
+### Browser UI (`juncture web`)
+
+Stdlib HTTP server, no extras dependency, vendored cytoscape + prism +
+markdown-it. Tabs:
+
+- **DAG** — kind-distinguishable shapes (seed = parallelogram, SQL =
+  blue, Python = green) + border-encoded last-run status + PII ring
+  propagation from flagged seeds. Click a node for a Metadata / Source
+  / Schema / Tests drilldown.
+- **Runs** — history table + per-model drawer with every
+  `statement_errors` entry classified into buckets (type_mismatch /
+  conversion / missing_object / …).
+- **Seeds** — format, inferred types, sentinel cache, parquet file
+  count.
+- **Portfolio** — model × owner × SLA × 30-day attainment with
+  freshness/success breach pills.
+- **Reliability** — per-tier SLA attainment + slowest-10 + top
+  failure buckets.
+- **Project** — parsed `juncture.yaml`, rendered README, git HEAD.
+- Download buttons in the DAG toolbar: `manifest.json`,
+  `manifest.openlineage.json`, and **`llm-knowledge.json`** — a
+  single-shot project snapshot (config + full source + seeds + latest
+  run) for paste-into-Claude workflows.
+
+### Migration tooling
+
+- **`juncture migrate keboola`** — raw Keboola config JSON → Juncture
+  project.
+- **`juncture migrate sync-pull`** — reads the `kbagent sync pull`
+  filesystem layout (symlinked parquet pools, SQL scripts) and produces
+  a Juncture project with `EXECUTE` materialization.
+- **`juncture sql split-execute`** — rewrites a multi-statement EXECUTE
+  monolith into one `.sql` per CTAS target with auto-inferred `ref()`
+  dependencies.
+- **`juncture sql translate`** — SQLGlot dialect translation
+  (Snowflake → DuckDB, etc.) with schema-aware type annotation and AST
+  passes (`harmonize_case_types`, `harmonize_binary_ops`,
+  `fix_timestamp_arithmetic`).
+- **`juncture debug diagnostics`** — regex-based classifier for DuckDB
+  error messages; buckets + subcategories + fix hints for the next
+  repair iteration.
+
+### Agent surface
+
+- **Claude Agent Skill** ships in
+  [`skills/juncture/SKILL.md`](skills/juncture/SKILL.md).
+- **Stable JSON CLI**: `juncture compile --json`, `juncture run
+  --json`, structured manifest with DAG + columns + tests.
+- **MCP server** skeleton under `juncture.mcp.server` (not yet shipping
+  — Phase 3).
+- **`/api/llm-knowledge`** — one JSON with everything a model needs to
+  reason about the project (see Browser UI above).
+
+## What's next (Phase 2, not shipping)
+
+- **Warehouse adapters**: Snowflake, BigQuery, Postgres. Stubs exist;
+  real `materialize_sql`, `MERGE INTO` incrementals, Arrow-backed
+  `fetch_ref` are Phase 2 work.
+- **Keboola component**: Docker wrapper runs today against static
+  Storage exports; real SAPI output upload + dev/prod branch mapping
+  are pending.
+- **OpenLineage runtime emitter**: skeleton in
+  `juncture.observability.lineage`; static export via
+  `/api/manifest/openlineage` already works.
+
+Track it in [`docs/ROADMAP.md`](docs/ROADMAP.md); weekly snapshot in
+[`docs/STATUS.md`](docs/STATUS.md) (Czech).
+
+## Example minimal Python model
 
 ```python
+# models/revenue_summary.py
 from juncture import transform
 
-@transform(depends_on=["fct_completed_orders"])
+
+@transform(depends_on=["stg_orders"])
 def revenue_summary(ctx):
-    orders = ctx.ref("fct_completed_orders").to_pandas()
-    return orders.groupby("country")["amount"].sum().reset_index()
+    orders = ctx.ref("stg_orders").to_pandas()
+    window = int(ctx.vars("lookback_days", 30))
+    return (
+        orders[orders["order_date"] >= orders["order_date"].max()
+               - pd.Timedelta(days=window)]
+        .groupby("country")["amount"]
+        .sum()
+        .reset_index()
+    )
 ```
 
-## Current status
+The function receives a `TransformContext`; `ctx.ref(name)` returns an
+Arrow Table, `ctx.vars(key, default)` reads the same external params
+as SQL's `{{ var('key') }}`.
 
-- ✅ MVP (v0.1): DuckDB adapter, SQL + Python models, DAG executor, 4
-  built-in tests, CLI, 29 tests passing.
-- ⏳ v0.2: seeds, Jinja mode, incremental state, env var interpolation.
-- ⏳ v0.3: Snowflake, BigQuery, Postgres adapters.
-- ⏳ v0.4: Keboola component wrapper, OpenLineage events.
+## Doc map
 
-Full roadmap in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+- [`docs/VISION.md`](docs/VISION.md) — what + why. Stable reference.
+- [`docs/TUTORIAL.md`](docs/TUTORIAL.md) — L1→L4 onboarding narrative.
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — `juncture.yaml`,
+  `.env`, `schema.yml`, seeds, macros, parallel EXECUTE.
+- [`docs/DESIGN.md`](docs/DESIGN.md) — architecture (Project, DAG,
+  Adapter, Executor, Testing, Seeds, Migration).
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — phased task list.
+- [`docs/STATUS.md`](docs/STATUS.md) — where we are right now (Czech).
+- [`docs/RESEARCH.md`](docs/RESEARCH.md) — competitive landscape.
+- [`docs/MIGRATION_TIPS.md`](docs/MIGRATION_TIPS.md) — Snowflake →
+  DuckDB migration field notes.
+- [`docs/rfcs/`](docs/rfcs/) — design proposals.
 
 ## License
 
