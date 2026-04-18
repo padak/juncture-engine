@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "juncture-engine",
+  "version": "1.0.0",
+  "description": "Claude Code plugin for the Juncture data transformation engine — SQL + Python in one DAG, DuckDB locally, warehouses in production",
+  "owner": {
+    "name": "Petr Simecek",
+    "email": "petr@keboola.com"
+  },
+  "plugins": [
+    {
+      "name": "juncture",
+      "source": "./plugins/juncture",
+      "description": "Author, run, debug, and migrate Juncture transformation projects via natural-language Claude conversations",
+      "category": "data-engineering"
+    }
+  ]
+}

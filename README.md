@@ -53,20 +53,23 @@ juncture run --project examples/tutorial_shop \
   --var as_of=2026-01-20 --var lookback_days=7
 ```
 
-### Or: let Claude drive
+### Or: let Claude drive (Claude Code plugin)
 
-This repo ships a **Claude Agent Skill** at
-[`.claude/skills/juncture/`](.claude/skills/juncture/) — a structured
-knowledge pack that teaches any Claude session every Juncture mechanic:
-project shape, all five materializations, the migration repair loop
-(`continue-on-error → diagnostics → sanitize`), profile-based
-dev/staging/prod, the full `juncture.yaml` + `schema.yml` reference,
-and a troubleshooting recipe book. Auto-loads in Claude Code whenever
-you work inside this repo.
+This repo ships a **Claude Code plugin** that teaches any Claude session
+every Juncture mechanic: project shape, all five materializations, the
+migration repair loop (`continue-on-error → diagnostics → sanitize`),
+profile-based dev/staging/prod, the full `juncture.yaml` + `schema.yml`
+reference, and a troubleshooting recipe book. Progressive disclosure
+under the hood — lean `SKILL.md` as a navigation hub plus five
+references the agent loads only when the task touches them. No giant
+prompt dump in your context window.
+
+Install once, use from any directory:
 
 ```bash
-# Use Juncture from any directory on your machine:
-cp -r .claude/skills/juncture ~/.claude/skills/
+# Add this repo as a plugin marketplace, then install the plugin:
+claude plugin marketplace add padak/juncture-engine
+claude plugin install juncture@juncture-engine
 ```
 
 Then ask Claude things like:
@@ -75,9 +78,11 @@ Then ask Claude things like:
 - *"I have a Snowflake transformation in `kbagent sync pull` format. Migrate it to DuckDB and fix the EXECUTE errors."*
 - *"Add a `prod` profile that targets Snowflake while keeping `dev` on local DuckDB."*
 
-Progressive disclosure under the hood — lean `SKILL.md` (170 lines) as
-a navigation hub plus five references the agent loads only when the
-task touches them. No giant prompt dump in your context window.
+Plugin source under [`plugins/juncture/`](plugins/juncture/),
+marketplace manifest in [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json).
+When you clone this repo, the same skill auto-loads via the
+project-level `.claude/skills/juncture` symlink — no install needed
+inside the repo itself.
 
 ## Build your own project
 
@@ -170,10 +175,12 @@ markdown-it. Tabs:
 
 ### Agent surface
 
-- **Claude Agent Skill** ships in
-  [`.claude/skills/juncture/`](.claude/skills/juncture/) — `SKILL.md`
-  navigation hub plus `references/` (lifecycle, yaml-schema, migration,
-  troubleshooting, materializations) loaded on demand.
+- **Claude Code plugin** at [`plugins/juncture/`](plugins/juncture/) —
+  install via `claude plugin install juncture@juncture-engine` after
+  adding `padak/juncture-engine` as a marketplace. Skill content lives
+  at `plugins/juncture/skills/juncture/` (lean `SKILL.md` + 5
+  `references/`); also symlinked into `.claude/skills/` for
+  auto-loading inside this repo.
 - **Stable JSON CLI**: `juncture compile --json`, `juncture run
   --json`, structured manifest with DAG + columns + tests.
 - **MCP server** skeleton under `juncture.mcp.server` (not yet shipping
