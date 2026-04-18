@@ -36,8 +36,10 @@ test-fast:
 	.venv/bin/pytest -x --ff
 
 examples:
-	cd examples/simple    && mkdir -p data && ../../.venv/bin/juncture run --project . --test
-	cd examples/ecommerce && mkdir -p data && ../../.venv/bin/juncture run --project . --test
+	cd examples/simple        && mkdir -p data && ../../.venv/bin/juncture run --project . --test
+	cd examples/ecommerce     && mkdir -p data && ../../.venv/bin/juncture run --project . --test
+	cd examples/tutorial_shop && mkdir -p data && ../../.venv/bin/juncture run --project . --test
+	cd examples/tutorial_shop && ../../.venv/bin/juncture run --project . --var as_of=2026-01-20 --var lookback_days=7
 
 # End-to-end demo against the fictional "Fjord & Fable" EU e-commerce project.
 # Generates deterministic fake data (seed=42), runs all 16 models, checks 57

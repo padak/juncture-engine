@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: stg_orders
+    description: Completed orders with canonical types.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests: [not_null]
+      - name: amount_eur
+        tests: [not_null]
+
+  - name: customer_tier
+    description: >
+      Ephemeral: per-customer LTV + tier. Not persisted as a table — lives
+      as an inlined DAG node so downstream marts see a consistent cut.
+    materialization: ephemeral
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: tier
+        tests:
+          - accepted_values:
+              values: [vip, regular, new]
+
+  - name: daily_revenue
+    description: Daily revenue grouped by shared my_date() format.
+    columns:
+      - name: day
+        tests: [not_null]
+      - name: revenue_eur
+        tests: [not_null]
+
+  - name: customer_summary
+    description: Customer dimension joined with LTV tier for BI.
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: tier
+        tests:
+          - accepted_values:
+              values: [vip, regular, new]
+
+  - name: cohort_retention
+    description: Python-computed cohort-month x order-month retention grid.
+    columns:
+      - name: cohort_month
+        tests: [not_null]
+      - name: retention_pct
+        tests: [not_null]

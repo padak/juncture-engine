@@ -186,13 +186,25 @@ class Project:
     _jinja_macros: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, root: Path | str) -> Project:
+    def load(cls, root: Path | str, *, run_vars: dict[str, Any] | None = None) -> Project:
+        """Load a project from disk.
+
+        ``run_vars`` is merged into ``juncture.yaml``'s ``vars:`` block
+        **before** Jinja rendering, so a ``--var as_of=2026-04-01`` on the
+        CLI actually flows into ``{{ var('as_of') }}`` inside a model's
+        SQL. Without this merge, SQL is rendered with juncture.yaml
+        defaults while Python models see the override — a subtle
+        inconsistency that breaks the "one external param, same
+        everywhere" story.
+        """
         root = Path(root).resolve()
         _load_dotenv_if_present(root)
         config_path = root / "juncture.yaml"
         if not config_path.exists():
             raise ProjectError(f"No juncture.yaml in {root}")
         config = ProjectConfig.from_file(config_path)
+        if run_vars:
+            config.vars = {**config.vars, **run_vars}
 
         project = cls(root=root, config=config)
         project._load_schemas()
