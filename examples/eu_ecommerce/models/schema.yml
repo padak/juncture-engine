@@ -1,0 +1,203 @@
+# Schema + tests for the eu_ecommerce example.
+#
+# `schedule_cron` fields are Phase 1 metadata only. Juncture does not run
+# a scheduler; the field is here to show how a downstream orchestrator
+# (Dagster, Airflow, or a Keboola orchestrator) would pick up the cadence
+# from the project itself. See VISION.md #6.
+#
+# Materialization override: `int_active_customer` is ephemeral — its
+# SQL is inlined into every downstream reader so the definition of
+# "active customer" lives in one place (VISION #2, shared blocks).
+
+models:
+  # ----- staging -----
+  - name: stg_customers
+    description: Customer dimension after type casts and email normalisation.
+    tags: [staging]
+    columns:
+      - name: customer_id
+        description: Primary key — BIGINT cast of the CSV id.
+        tests: [not_null, unique]
+      - name: email
+        tests: [not_null]
+      - name: country_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: [CZ, DE, FR, NL]
+      - name: preferred_language
+        tests:
+          - accepted_values:
+              values: [cs, de, fr, nl]
+      - name: marketing_consent
+        tests: [not_null]
+
+  - name: stg_orders
+    description: Closed orders (completed + refunded) with EUR-normalised amounts.
+    tags: [staging]
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: main.stg_customers
+              field: customer_id
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              values: [completed, refunded, cancelled, pending]
+      - name: currency
+        tests:
+          - accepted_values:
+              values: [EUR, CZK]
+      - name: total_amount_eur
+        tests: [not_null]
+
+  - name: stg_order_items
+    description: Order line items joined to product catalogue with EUR net amounts.
+    tags: [staging]
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - relationships:
+              to: main.stg_orders
+              field: order_id
+      - name: product_id
+        tests:
+          - not_null
+          - relationships:
+              to: main.stg_products
+              field: product_id
+
+  - name: stg_products
+    description: Product catalogue with precomputed margin metrics.
+    tags: [staging]
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+      - name: sku
+        tests: [not_null, unique]
+      - name: category_id
+        tests: [not_null]
+
+  - name: stg_campaigns
+    description: Marketing campaigns with channel_group and duration metrics.
+    tags: [staging]
+    columns:
+      - name: campaign_id
+        tests: [not_null, unique]
+      - name: channel
+        tests:
+          - not_null
+          - accepted_values:
+              values: [email, display, social, affiliate]
+      - name: channel_group
+        tests:
+          - accepted_values:
+              values: [paid_media, owned, partnerships, other]
+      - name: target_country
+        tests:
+          - accepted_values:
+              values: [CZ, DE, FR, NL]
+
+  # ----- intermediate -----
+  - name: int_active_customer
+    description: Customers who ordered in the last N days (N from vars.active_customer_days).
+    materialization: ephemeral
+    tags: [intermediate]
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+
+  - name: int_order_facts
+    description: Order-grain fact table (customer + campaign + product rollup).
+    tags: [intermediate]
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests: [not_null]
+
+  - name: int_rfm_inputs
+    description: Recency / Frequency / Monetary inputs per customer, fed into rfm_scores.
+    tags: [intermediate]
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+
+  # ----- marts -----
+  - name: customer_segments
+    description: Segment labels (vip/loyal/regular/at_risk/lost) per customer.
+    tags: [marts]
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: segment
+        tests:
+          - not_null
+          - accepted_values:
+              values: [vip, loyal, regular, at_risk, lost]
+
+  - name: campaign_performance
+    description: Per-campaign KPIs with ROAS and return on margin.
+    tags: [marts]
+    columns:
+      - name: campaign_id
+        tests: [not_null, unique]
+
+  - name: daily_revenue
+    description: Daily revenue grain by country × marketing channel_group.
+    tags: [marts]
+    schedule_cron: "0 2 * * *"
+    columns:
+      - name: revenue_date
+        tests: [not_null]
+      - name: country_code
+        tests: [not_null]
+
+  - name: product_performance
+    description: Per-SKU sales, refunds, realised margin.
+    tags: [marts]
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+
+  - name: country_cohort_retention
+    description: Signup-month cohort retention by country.
+    tags: [marts]
+
+  # ----- python -----
+  - name: rfm_scores
+    description: RFM quintile scoring per customer.
+    tags: [python]
+    schedule_cron: "0 3 * * 1"
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: rfm_tier
+        tests:
+          - not_null
+          - accepted_values:
+              values: [champion, loyal, potential, at_risk, hibernating]
+
+  - name: daily_revenue_anomalies
+    description: Rolling z-score anomaly flags on daily revenue.
+    tags: [python]
+    columns:
+      - name: revenue_date
+        tests: [not_null]
+
+  - name: customer_ltv
+    description: Closed-form CLV per customer; blends SQL facts with RFM tiers.
+    tags: [python]
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: rfm_tier
+        tests:
+          - accepted_values:
+              values: [champion, loyal, potential, at_risk, hibernating]
