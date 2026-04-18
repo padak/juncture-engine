@@ -5,7 +5,7 @@
 
 **Status:** early alpha (`0.1.0a0`). Engine runs real workloads on
 DuckDB end-to-end (pilot migration: 208 parquet seeds x 374 SQL
-statements). Snowflake / BigQuery / Postgres adapters are Phase 2 —
+statements). Snowflake / BigQuery / JDBC adapters are Phase 2 —
 stub only today.
 
 One engine that replaces Keboola's four legacy transformation
@@ -151,9 +151,10 @@ markdown-it. Tabs:
 
 ## What's next (Phase 2, not shipping)
 
-- **Warehouse adapters**: Snowflake, BigQuery, Postgres. Stubs exist;
+- **Warehouse adapters**: Snowflake, BigQuery, JDBC. Stubs exist;
   real `materialize_sql`, `MERGE INTO` incrementals, Arrow-backed
-  `fetch_ref` are Phase 2 work.
+  `fetch_ref` are Phase 2 work. Unlocks the **one project → many
+  backends** story (see below).
 - **Keboola component**: Docker wrapper runs today against static
   Storage exports; real SAPI output upload + dev/prod branch mapping
   are pending.
@@ -163,6 +164,50 @@ markdown-it. Tabs:
 
 Track it in [`docs/ROADMAP.md`](docs/ROADMAP.md); weekly snapshot in
 [`docs/STATUS.md`](docs/STATUS.md) (Czech).
+
+## Planned differentiators (the v2.0 bet)
+
+These are the reasons to pick Juncture over dbt or SQLMesh **once they
+ship**. Today none of them is shipping — Phase 2 finishes first, then
+these light up on top. Rationale in [`docs/VISION.md`](docs/VISION.md)
+§Differentiators, sequencing in
+[`docs/STRATEGY.md`](docs/STRATEGY.md#phase-4--v20-differentiators),
+task list in [`docs/ROADMAP.md`](docs/ROADMAP.md#phase-4--v20-differentiators).
+
+- **Backend arbitrage via dialect translation.** The same project
+  runs on DuckDB locally and on Snowflake / BigQuery / JDBC in
+  production. SQLGlot handles the dialect diff; authors write one
+  SQL and let the engine target the cheapest backend that fits the
+  workload. Unique in the transformation-tool space — dbt and
+  SQLMesh both pin a project to one dialect. Ships with Phase 2
+  adapters.
+- **Virtual data environments** (à la SQLMesh). Hashes of model
+  attributes create snapshot tables; promoting to prod is a pointer
+  swap. Dev branches get a real isolated dataset per branch with
+  zero recompute until you change a model. Combined with Keboola
+  dev branches: every Keboola branch = a real, free environment.
+- **AI dialect arbitrage.** The engine auto-switches DuckDB ↔
+  warehouse based on data size and cost. Small slice fits in RAM
+  → run on DuckDB for free. Slice grows → spill to Snowflake /
+  BigQuery transparently, same project, no user decision. The
+  promise: a laptop stays a laptop until the data genuinely needs
+  a warehouse.
+- **Semantic / metrics layer.** Express "active customer",
+  "monthly recurring revenue", "EU region" once; consume the same
+  definition from SQL models, Python models, and BI tools alike.
+  Cube-compatible DSL baked into the engine, so the metric and the
+  transformation that produces it live in one file.
+- **Agentic authoring.** A prompt like _"build me a daily orders
+  dashboard"_ scaffolds, runs, tests, and iterates a project
+  end-to-end. Builds on the already-shipping agent surface:
+  `juncture compile --json`, `/api/llm-knowledge` (one-JSON project
+  snapshot for LLM context), the Claude Agent Skill, and the MCP
+  server (Phase 3). The Keboola customer gets a working pipeline
+  from a sentence, without ever opening a Jinja macro.
+
+Phase 4's done-done (per [`docs/STRATEGY.md`](docs/STRATEGY.md)) is
+two of these five shipped and demoed on a real customer pipeline —
+not all of them.
 
 ## Example minimal Python model
 
