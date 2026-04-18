@@ -191,7 +191,19 @@ class Project:
         if not models_root.exists():
             return
         for schema_file in models_root.rglob("schema.yml"):
-            data = yaml.safe_load(schema_file.read_text()) or {}
+            try:
+                data = yaml.safe_load(schema_file.read_text()) or {}
+            except yaml.YAMLError as exc:
+                # Wrap PyYAML's deep traceback with a user-actionable message.
+                # Most common offender: tab characters used for indentation
+                # (YAML forbids them) after copy/paste into editors that
+                # auto-convert indentation.
+                raise ProjectError(
+                    f"Failed to parse {schema_file.relative_to(self.root)}: {exc}. "
+                    f"Tip: YAML does not allow tab characters for indentation; "
+                    f"check the file with `cat -A {schema_file.relative_to(self.root)}` "
+                    f"and replace any ^I markers with spaces."
+                ) from exc
             for model_decl in data.get("models", []):
                 self.schemas[model_decl["name"]] = model_decl
 
