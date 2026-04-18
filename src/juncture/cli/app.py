@@ -119,6 +119,11 @@ connections:
 def compile(
     project: Path = typer.Option(Path("."), "--project", "-p", help="Project directory."),
     output_json: bool = typer.Option(False, "--json", help="Emit DAG as JSON."),
+    dot: Path | None = typer.Option(
+        None,
+        "--dot",
+        help="Write the DAG as a Graphviz DOT file. Render with `dot -Tsvg <file> > <file>.svg`.",
+    ),
 ) -> None:
     """Parse the project, build the DAG, and show what will run."""
     project_obj = Project.load(project)
@@ -141,6 +146,17 @@ def compile(
         typer.echo(json.dumps(payload, indent=2))
         return
 
+    if dot is not None:
+        dot.parent.mkdir(parents=True, exist_ok=True)
+        _write_dag_dot(dag, dot, project_name=project_obj.config.name)
+        console.print(
+            f"[green]Wrote Graphviz DOT to[/] {dot}\n"
+            f"Render with: [bold]dot -Tsvg {dot} > {dot.with_suffix('.svg')}[/]\n"
+            f"For a denser layout on large DAGs try: "
+            f"[bold]sfdp -Tsvg -Goverlap=prism {dot} > {dot.with_suffix('.svg')}[/]"
+        )
+        return
+
     table = Table(title=f"Juncture DAG — {project_obj.config.name}")
     table.add_column("#", justify="right", style="dim")
     table.add_column("Model")
@@ -152,6 +168,39 @@ def compile(
         deps = ", ".join(sorted(m.depends_on)) or "[dim]—[/]"
         table.add_row(str(idx), m.name, m.kind.value, m.materialization.value, deps)
     console.print(table)
+
+
+_DOT_COLOR = {
+    "seed": "#FFE8C8",    # warm amber — pre-DAG input
+    "sql": "#CFE8F5",     # cool blue — SQL transform
+    "python": "#D6F0D6",  # soft green — Python transform
+}
+
+
+def _write_dag_dot(dag, path: Path, *, project_name: str) -> None:
+    """Write ``dag`` as a Graphviz DOT file with colour-coded nodes by kind."""
+    lines: list[str] = [
+        f'digraph "{project_name}" {{',
+        "  rankdir=LR;",
+        "  graph [nodesep=0.2, ranksep=0.6, splines=ortho];",
+        '  node  [shape=box, style="filled,rounded", fontname="Helvetica", fontsize=10];',
+        "  edge  [arrowsize=0.5, color=gray40];",
+    ]
+    for name in dag.topological_order():
+        m = dag.model(name)
+        color = _DOT_COLOR.get(m.kind.value, "#FFFFFF")
+        label = (
+            m.name.replace('"', '\\"')
+            + f"\\n[{m.kind.value}/{m.materialization.value}]"
+        )
+        lines.append(f'  "{m.name}" [label="{label}", fillcolor="{color}"];')
+    # Edges (depends_on -> model).
+    for name in dag.topological_order():
+        m = dag.model(name)
+        for dep in sorted(m.depends_on):
+            lines.append(f'  "{dep}" -> "{m.name}";')
+    lines.append("}")
+    path.write_text("\n".join(lines))
 
 
 @app.command()
