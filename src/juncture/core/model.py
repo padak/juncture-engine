@@ -73,6 +73,29 @@ class Model:
     #: be visually distinguished from cascade-failure skips.
     disabled: bool = False
 
+    # --- Governance surface (RFC 0001 §7, M4) --------------------------
+    # Optional fields. A schema.yml with none of these renders the
+    # Portfolio tab with empty columns; nothing else changes.
+    #
+    # Owner / team are freeform (email or handle). criticality is a
+    # short string by convention ``tier-1`` / ``tier-2`` / ``tier-3``;
+    # we do not validate the value so new tiers can be introduced
+    # without a code change. sla.* are numeric targets used by the
+    # Portfolio ``sort by SLA breach`` view and the 30-day dashboard.
+    # consumers is a list of dicts ``{name, url?, team?}``; a plain
+    # string in the YAML is accepted and auto-promoted to ``{name: s}``
+    # so early adopters don't have to restructure on day one.
+    # docs is the path to a long-form markdown file; if omitted the
+    # Portfolio falls back to ``<model>.md`` next to the ``.sql`` file.
+    owner: str | None = None
+    team: str | None = None
+    business_unit: str | None = None
+    criticality: str | None = None
+    sla_freshness_hours: float | None = None
+    sla_success_rate_target: float | None = None
+    docs: str | None = None
+    consumers: list[dict[str, Any]] = field(default_factory=list)
+
     def __post_init__(self) -> None:
         if self.kind is ModelKind.SQL and self.sql is None:
             raise ValueError(f"SQL model {self.name!r} requires non-empty sql")

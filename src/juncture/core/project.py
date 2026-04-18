@@ -148,6 +148,18 @@ class SeedSpec:
     format: str = "csv"
     schema_overrides: dict[str, str] = field(default_factory=dict)
 
+    # --- Governance surface (RFC 0001 §7 seeds block, M4) --------------
+    # All optional. source_system names the upstream system (keboola /
+    # s3 / snowflake / ...), source_locator carries a freeform path or
+    # identifier (Keboola bucket+table, S3 URL, ...). pii flags PII so
+    # the DAG can propagate a ring colour to descendants. retention_days
+    # drives the "days until expiry" hover.
+    source_system: str | None = None
+    source_locator: str | None = None
+    pii: bool = False
+    retention_days: int | None = None
+    owner: str | None = None
+
 
 @dataclass(kw_only=True)
 class CustomTestSpec:
@@ -297,11 +309,19 @@ class Project:
         if not seeds_root.exists():
             return []
         schema_overrides: dict[str, dict[str, str]] = {}
+        seed_governance: dict[str, dict[str, Any]] = {}
         schema_file = seeds_root / "schema.yml"
         if schema_file.exists():
             data = yaml.safe_load(schema_file.read_text()) or {}
             for seed in data.get("seeds", []):
                 schema_overrides[seed["name"]] = seed.get("columns", {})
+                seed_governance[seed["name"]] = {
+                    "source_system": seed.get("source_system"),
+                    "source_locator": seed.get("source_locator"),
+                    "pii": bool(seed.get("pii", False)),
+                    "retention_days": seed.get("retention_days"),
+                    "owner": seed.get("owner"),
+                }
 
         parquet_dirs: set[Path] = set()
         csv_files: set[Path] = set()
@@ -324,6 +344,7 @@ class Project:
                     path=parquet_dir,
                     format="parquet",
                     schema_overrides=schema_overrides.get(name, {}),
+                    **(seed_governance.get(name) or {}),
                 )
             )
         parquet_names = {s.name for s in specs}
@@ -337,6 +358,7 @@ class Project:
                     path=csv_file,
                     format="csv",
                     schema_overrides=schema_overrides.get(name, {}),
+                    **(seed_governance.get(name) or {}),
                 )
             )
         return specs
@@ -417,6 +439,7 @@ class Project:
             for col in schema_meta.get("columns", [])
         ]
 
+        governance = _governance_from_schema(schema_meta)
         return Model(
             name=name,
             kind=ModelKind.SQL,
@@ -433,6 +456,7 @@ class Project:
             schedule_cron=schema_meta.get("schedule_cron"),
             config=schema_meta.get("config", {}),
             disabled=bool(schema_meta.get("disabled", False)),
+            **governance,
         )
 
     def _load_python_models(self, path: Path) -> list[Model]:
@@ -452,6 +476,7 @@ class Project:
             meta = get_metadata(obj)
             name = meta["name"]
             schema_meta = self.schemas.get(name, {})
+            governance = _governance_from_schema(schema_meta)
             models.append(
                 Model(
                     name=name,
@@ -475,9 +500,39 @@ class Project:
                     schedule_cron=meta["schedule_cron"] or schema_meta.get("schedule_cron"),
                     config=meta["config"] | schema_meta.get("config", {}),
                     disabled=bool(schema_meta.get("disabled", False)),
+                    **governance,
                 )
             )
         return models
+
+
+def _governance_from_schema(schema_meta: dict[str, Any]) -> dict[str, Any]:
+    """Extract the optional M4 governance fields from a schema.yml entry.
+
+    Returns a dict ready to splat into :class:`Model` via ``**governance``.
+    Fields are all optional; missing keys become ``None`` / ``[]``.
+    ``consumers`` accepts either a list of dicts ``{name, url?, team?}``
+    or a list of plain strings (promoted to ``{name: s}``) so users can
+    migrate incrementally.
+    """
+    sla = schema_meta.get("sla") or {}
+    raw_consumers = schema_meta.get("consumers") or []
+    consumers: list[dict[str, Any]] = []
+    for c in raw_consumers:
+        if isinstance(c, dict):
+            consumers.append(dict(c))
+        elif isinstance(c, str):
+            consumers.append({"name": c})
+    return {
+        "owner": schema_meta.get("owner"),
+        "team": schema_meta.get("team"),
+        "business_unit": schema_meta.get("business_unit"),
+        "criticality": schema_meta.get("criticality"),
+        "sla_freshness_hours": sla.get("freshness_hours") if isinstance(sla, dict) else None,
+        "sla_success_rate_target": sla.get("success_rate_target") if isinstance(sla, dict) else None,
+        "docs": schema_meta.get("docs"),
+        "consumers": consumers,
+    }
 
 
 def _probe_parquet_columns(parquet_dir: Path) -> dict[str, str]:
