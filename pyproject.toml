@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "juncture"
-version = "0.1.0a0"
+version = "0.40.0"
 description = "Multi-backend SQL + Python transformation engine. Local-first, DuckDB-native, Keboola-compatible."
 readme = "README.md"
 requires-python = ">=3.11"

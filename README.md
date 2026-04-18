@@ -3,10 +3,10 @@
 > Multi-backend SQL + Python transformation engine. Local-first,
 > DuckDB-native.
 
-**Status:** early beta. Engine runs real
-workloads on DuckDB end-to-end (pilot migration: 208 parquet seeds
-x 374 SQL statements). Snowflake / BigQuery / JDBC adapters are
-Phase 2 — stub only today.
+**Status:** `v0.40.0`, early beta. Engine runs real workloads on
+DuckDB end-to-end (pilot migration: 208 parquet seeds × 374 SQL
+statements). Snowflake / BigQuery / JDBC adapters are Phase 2 —
+stub only today.
 
 One engine that replaces Keboola's four legacy transformation
 components (`snowflake-transformation`, `python-transformation`,

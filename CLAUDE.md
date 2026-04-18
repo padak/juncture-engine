@@ -40,7 +40,7 @@ private doc, keep it local — it is not pushed.
 
 ## Project
 
-Juncture (`src/juncture`, package name `juncture`, version `0.1.0a0`): a
+Juncture (`src/juncture`, package name `juncture`, version `0.40.0`): a
 multi-backend SQL + Python transformation engine. Local-first, DuckDB-native,
 Keboola-compatible. Python 3.11+, Apache 2.0. CLI entrypoint:
 `juncture = "juncture.cli:app"` (Typer).
