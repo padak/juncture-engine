@@ -3,7 +3,8 @@
 > Multi-backend SQL + Python transformation engine. Local-first,
 > DuckDB-native.
 
-**Status:** `v0.40.0`, early beta. Engine runs real workloads on
+**Status:** early beta (see [Releases](https://github.com/padak/juncture-engine/releases)
+for the latest tag). Engine runs real workloads on
 DuckDB end-to-end (pilot migration: 208 parquet seeds × 374 SQL
 statements). Snowflake / BigQuery / JDBC adapters are Phase 2 —
 stub only today.
