@@ -33,6 +33,8 @@ examples/tutorial_shop/
 ├── macros/
 │   ├── dates.sql                # my_date(col), my_month(col)
 │   └── tiers.sql                # is_vip(amount_col) — reads var('vip_threshold_eur')
+├── scripts/
+│   └── generate_data.py         # deterministic CSV generator (tiny/small/medium)
 └── models/
     ├── schema.yml               # materialization + tests per model
     ├── stg_orders.sql           # type casts + filter status='completed'

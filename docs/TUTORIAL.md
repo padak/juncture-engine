@@ -6,9 +6,21 @@ on top of the previous one. The final state lives under
 side-by-side as you read, or build your own from scratch along with
 the tutorial.*
 
-Dependencies: Python 3.11+, a checkout of Juncture, and `make install`
-(or `pip install -e '.[dev,pandas]'`). No warehouse credentials, no
-Docker. The whole thing runs on your laptop against DuckDB.
+Dependencies: Python 3.11+ and one of the following. No warehouse
+credentials, no Docker. The whole thing runs on your laptop against
+DuckDB.
+
+```bash
+# Option 1 -- just want the CLI on your PATH (recommended for this tutorial)
+uv tool install git+https://github.com/padak/juncture-engine
+
+# Option 2 -- hacking on Juncture itself, from a repo checkout
+git clone https://github.com/padak/juncture-engine.git && cd juncture-engine
+make install     # creates .venv and installs '-e .[dev,pandas]'
+```
+
+Juncture is not on PyPI yet, so plain `pip install juncture` does not
+work — use one of the two recipes above.
 
 ## The use case
 
@@ -29,8 +41,8 @@ We will build it in four levels.
 
 ## Level 1 — from zero to a first SELECT
 
-**Goal:** `pip install juncture`, point it at your two CSVs, compute
-daily revenue.
+**Goal:** install the CLI (see *Dependencies* above), point it at your
+two CSVs, compute daily revenue.
 
 ### Scaffold
 
@@ -59,6 +71,25 @@ Juncture will auto-load every `.csv` under `seeds/` as a source table.
 The seed name is the filename without the extension: `orders.csv` →
 table `orders`. Downstream models reference it via `{{ ref('orders') }}`.
 
+### Don't have any CSVs? Generate them.
+
+The repo ships a zero-dependency generator tailored for this tutorial.
+From a clone of Juncture:
+
+```bash
+# From repo root. Default output is examples/tutorial_shop/seeds/
+python examples/tutorial_shop/scripts/generate_data.py                  # small: 50 + 200
+python examples/tutorial_shop/scripts/generate_data.py --scale medium   # 500 + 2 000
+
+# Generate into your own project instead:
+python examples/tutorial_shop/scripts/generate_data.py --output-dir my_shop/seeds
+```
+
+Writes `customers.csv` and `orders.csv` with the same schema the tutorial
+assumes. Deterministic from `--seed 42`; re-running produces the same
+bytes, so commits stay stable. Scales: `tiny` (8 / 20), `small` (50 / 200,
+default), `medium` (500 / 2 000).
+
 ### Write your first model
 
 `models/daily_revenue.sql`:
@@ -84,6 +115,39 @@ You will see a table of results: the two seeds loaded, then
 `daily_revenue` computed and persisted in the local DuckDB file
 (`data/my_shop.duckdb` by default).
 
+### Under the hood: what DuckDB actually does
+
+Juncture opened `data/my_shop.duckdb`, loaded each CSV seed into a
+DuckDB **table** via `read_csv_auto()`, then ran your SQL model as a
+`CREATE OR REPLACE TABLE daily_revenue AS …`. You can poke around with
+the DuckDB CLI:
+
+```bash
+duckdb data/my_shop.duckdb -c '.tables'
+# customers  daily_revenue  orders
+
+duckdb data/my_shop.duckdb -c 'DESCRIBE orders'
+# column_name   column_type
+# order_id      INTEGER
+# customer_id   INTEGER
+# order_ts      TIMESTAMP
+# amount_eur    DOUBLE
+# status        VARCHAR
+
+duckdb data/my_shop.duckdb -c 'SELECT * FROM daily_revenue LIMIT 3'
+```
+
+Two rules worth internalising now:
+
+- **CSV seeds are `CREATE TABLE AS SELECT … read_csv_auto(…)`** — the
+  data is copied into DuckDB. Fine for megabytes.
+- **Parquet seeds are views** (`CREATE VIEW … read_parquet(…)`) — DuckDB
+  reads from disk on demand, no copy. Matters for multi-GB datasets.
+
+Model outputs default to `table` materialization, same `CREATE OR
+REPLACE TABLE` pattern. Later levels introduce `view`, `ephemeral`, and
+`incremental`.
+
 ### What you got
 
 - A project you can `git init` and version.
@@ -93,6 +157,21 @@ You will see a table of results: the two seeds loaded, then
 
 This is already more than the four legacy Keboola components would
 give you on their own.
+
+### With Claude Code
+
+If you have Claude Code with the `juncture` skill enabled (see
+`skills/juncture/SKILL.md` in this repo or install it as a plugin), the
+whole of Level 1 reduces to one prompt:
+
+> *"Scaffold a Juncture project called `my_shop`, drop the two CSVs from
+> `~/Downloads/` into `seeds/`, and write a `daily_revenue.sql` model
+> that groups `orders` by day with order count and revenue sum."*
+
+The skill knows the project layout, runs `juncture compile` / `run` for
+you, and reports row counts and any data-test failures back. If you
+don't have the CSVs, add *"generate small-scale seeds first"* and the
+agent will invoke the generator from the previous section.
 
 ---
 
@@ -151,6 +230,17 @@ juncture run --project .
 
 Now the run output lists both `daily_revenue` and `cohort_retention`.
 You can `juncture web --project .` to see them side-by-side in the DAG.
+
+### With Claude Code
+
+> *"Add a Python model `cohort_retention` that reads `orders` via
+> `ctx.ref()` and returns a cohort-month × order-month DataFrame with
+> retention percentages. Register it with `depends_on=['orders',
+> 'customers']`."*
+
+The skill writes the `@transform` function, adds the dependency
+declaration, and re-runs the DAG so you see the SQL and Python models
+materialize in the same execution.
 
 ---
 
@@ -273,6 +363,17 @@ Macros are for the small parts; ephemeral models are for the shared
 shapes; Python models are for the algorithm-ish stuff. You can
 combine all three in the same DAG.
 
+### With Claude Code
+
+> *"Extract the VIP threshold into a macro `is_vip(amount_col)` under
+> `macros/`, turn `customer_tier` into an ephemeral model with an
+> `accepted_values` test on the `tier` column, and rewrite
+> `customer_summary` to join on it."*
+
+The skill enables `jinja: true` in `juncture.yaml`, creates the macro,
+adds the `schema.yml` entry for ephemeral materialization, and verifies
+the DAG still resolves by running `juncture compile --json`.
+
 ---
 
 ## Level 4 — external parameters from the CLI
@@ -341,6 +442,18 @@ model) all read the same override at once.
 - If no default and the key is missing everywhere, Jinja fails fast
   with `StrictUndefined` — no silent defaults (matches the Juncture
   contract).
+
+### With Claude Code
+
+> *"Add `as_of` and `lookback_days` to `juncture.yaml vars:`, read them
+> from `daily_revenue.sql` with `{{ var(...) }}` and from
+> `cohort_retention.py` with `ctx.vars(...)`. Then run the project with
+> `--var as_of=2026-01-20 --var lookback_days=7` and show me how the
+> output changed."*
+
+The skill wires the Jinja and Python sides consistently, runs both the
+default build and the overridden one, and diffs the row counts so you
+see the window change immediately.
 
 ---
 
