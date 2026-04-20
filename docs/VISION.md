@@ -12,7 +12,7 @@ replaces Keboola's four legacy transformation components
 (`snowflake-transformation`, `python-transformation`,
 `duckdb-transformation`, `dbt-transformation`) with a single engine.**
 It is local-first and DuckDB-native: a developer with a laptop, a CSV,
-and `uv tool install git+https://github.com/padak/juncture-engine` can
+and `uv tool install --with pandas git+https://github.com/padak/juncture-engine` can
 write, run, and test a transformation with no cloud in the loop. The same project deploys unchanged to
 Snowflake, BigQuery, or Postgres via SQLGlot dialect translation, and
 the same engine ships as a thin Keboola component. Code lives in git
@@ -157,7 +157,7 @@ We will know Juncture has won when:
   workloads, measured against the "Oldie but Goldie v2" benchmark
   pipeline.
 - **End-to-end local demo works in under 5 minutes** for a new user:
-  `uv tool install git+https://github.com/padak/juncture-engine` →
+  `uv tool install --with pandas git+https://github.com/padak/juncture-engine` →
   `juncture init` → `juncture run` → green tests, with no cloud
   credentials.
 - **The Keboola component ships as the single replacement** for

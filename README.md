@@ -27,11 +27,20 @@ legacy Keboola components collapse into one engine.*
 ## Install
 
 ```bash
+# End-user install -- CLI on your PATH, no repo checkout:
+uv tool install --with pandas git+https://github.com/padak/juncture-engine
+
+# Contributor install -- editable checkout:
 git clone git@github.com:padak/juncture-engine.git juncture
 cd juncture
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,pandas]"
 ```
+
+`--with pandas` keeps the `uv tool` env able to run Python models (the
+`@transform` path imports pandas). See
+[`docs/TUTORIAL.md §Managing the Juncture environment`](docs/TUTORIAL.md#managing-the-juncture-environment)
+for adding more packages later (`scikit-learn`, …) or upgrading Juncture itself.
 
 ## See it work first (60 seconds)
 
