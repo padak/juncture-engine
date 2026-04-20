@@ -793,7 +793,14 @@
     const types = seed.inferred_types || {};
     const sentinels = seed.sentinels || {};
     if (!Object.keys(types).length) {
-      container.innerHTML = '<p style="color:var(--text-dim); font-style: italic;">No inferred types cached. Run <code>juncture run</code> to populate the seed schema cache.</p>';
+      // CSV seeds are loaded via DuckDB's read_csv_auto() at runtime; the
+      // schema cache (.juncture/seed_schemas.json) intentionally only holds
+      // parquet seeds, so `juncture run` won't populate anything here. Make
+      // that explicit so users don't go re-running looking for output.
+      const msg = seed.format === "csv"
+        ? 'CSV seeds are type-inferred at runtime via <code>read_csv_auto()</code> — not cached. Add a <code>seeds/schema.yml</code> entry to pin column types explicitly.'
+        : 'No inferred types cached. Run <code>juncture run</code> to populate the seed schema cache.';
+      container.innerHTML = `<p style="color:var(--text-dim); font-style: italic;">${msg}</p>`;
       return;
     }
     const rows = Object.entries(types).map(([col, t]) => {
