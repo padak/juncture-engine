@@ -15,6 +15,21 @@ from __future__ import annotations
 
 # Ordered newest-first. Each value is a list of brief one-line descriptions.
 CHANGELOG: dict[str, list[str]] = {
+    "0.41.3": [
+        "New: `juncture version` subcommand -- live GitHub fetch, prints "
+        "a rich panel with current version + update hint "
+        "(`v0.41.3  ->  v0.41.4 available (run: juncture update)`). "
+        "Port of the kbagent `version` UX: explicit check, no auto-install",
+        "Revert: `juncture -V` / `--version` is back to a lightweight "
+        "local-only print. 0.41.2 briefly made it trigger `maybe_auto_update()` "
+        "(auto-install + re-exec), which was the wrong semantics for a flag "
+        "scripts call just to learn the installed version. If you want a "
+        "live update check, use the new `juncture version` subcommand",
+        "Chore: restore the version-cache TTL to 1 hour (was 5 min in "
+        "0.41.2). With `juncture version` covering the explicit-check lane, "
+        "the cached auto-update path can go back to the gentler cadence "
+        "without starving users of fresh-release information",
+    ],
     "0.41.2": [
         "Fix: `juncture -V` / `--version` now triggers the auto-update flow. "
         "Typer's `is_eager=True` on the option made the version callback "

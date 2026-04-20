@@ -41,13 +41,9 @@ logging.basicConfig(
 
 def _version_callback(value: bool) -> None:
     if value:
-        # ``--version`` / ``-V`` is a Typer option with ``is_eager=True``, so
-        # it fires *before* the ``_root`` body. Run the auto-update flow here
-        # too, otherwise ``juncture -V`` would never trigger an upgrade.
-        # If an update happens, ``_re_exec`` replaces this process with the
-        # new binary and we never return to the print below.
-        maybe_auto_update()
-        show_post_update_changelog()
+        # Intentionally lightweight: local-only, no network, no auto-update.
+        # For scripts and quick checks. Use ``juncture version`` (subcommand)
+        # if you want a live GitHub fetch + update hint.
         console.print(f"juncture {__version__}")
         raise typer.Exit()
 
@@ -239,6 +235,36 @@ def changelog(
         console.print(f"\n[bold]v{ver}[/]")
         for note in notes:
             console.print(f"  - {note}")
+
+
+@app.command(rich_help_panel="Maintenance")
+def version() -> None:
+    """Show installed version and live-check GitHub for a newer release.
+
+    Lighter-weight alternative to ``juncture update`` that only *reports*
+    whether an upgrade is available — it never installs anything. For
+    scripts that just need the installed version string, use the
+    ``--version`` / ``-V`` flag instead; it skips the network call.
+    """
+    from rich.text import Text
+
+    from juncture._auto_update import _fetch_latest_version, _is_up_to_date
+
+    latest = _fetch_latest_version()
+    up_to_date = _is_up_to_date(__version__, latest)
+
+    text = Text()
+    text.append(f"juncture v{__version__}", style="bold")
+
+    if up_to_date is False and latest is not None:
+        text.append(f"  ->  v{latest} available", style="yellow")
+        text.append("\n  (run: juncture update)", style="dim")
+    elif up_to_date is True:
+        text.append("    up to date", style="green")
+    else:
+        text.append("\n  (update check failed -- GitHub unreachable?)", style="dim")
+
+    console.print(Panel(text, title="Version", border_style="blue"))
 
 
 @app.command(rich_help_panel="Core workflow")

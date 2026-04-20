@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from juncture.cli.app import app
@@ -244,3 +245,59 @@ def test_run_with_unknown_profile_fails(tmp_path: Path) -> None:
     assert result.exit_code != 0
     message = str(result.exception) if result.exception else (result.stdout + (result.stderr or ""))
     assert "profile 'missing' is not declared" in message
+
+
+# ---------------------------------------------------------------------------
+# `juncture version` subcommand -- live GitHub fetch + rich panel
+# ---------------------------------------------------------------------------
+
+
+def test_version_subcommand_shows_up_to_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When GitHub returns our installed version, render 'up to date'."""
+    from juncture import _version
+
+    monkeypatch.setattr(
+        "juncture._auto_update._fetch_latest_version",
+        lambda *a, **kw: _version.__version__,
+    )
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert _version.__version__ in result.stdout
+    assert "up to date" in result.stdout.lower()
+
+
+def test_version_subcommand_shows_update_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When GitHub returns a newer tag, render the 'available' hint."""
+    monkeypatch.setattr(
+        "juncture._auto_update._fetch_latest_version",
+        lambda *a, **kw: "99.99.99",
+    )
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert "99.99.99" in result.stdout
+    assert "available" in result.stdout.lower()
+    assert "juncture update" in result.stdout
+
+
+def test_version_subcommand_handles_network_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When GitHub is unreachable, degrade gracefully -- still exit 0."""
+    monkeypatch.setattr(
+        "juncture._auto_update._fetch_latest_version",
+        lambda *a, **kw: None,
+    )
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert "check failed" in result.stdout.lower() or "unreachable" in result.stdout.lower()
+
+
+def test_version_flag_stays_local_only() -> None:
+    """`--version` / `-V` must NOT hit the network or trigger auto-update --
+    scripts depend on it being fast and side-effect-free."""
+    from juncture import _version
+
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert f"juncture {_version.__version__}" in result.stdout
+    # No panel / update hint -- that's the `juncture version` subcommand's job.
+    assert "available" not in result.stdout.lower()
+    assert "up to date" not in result.stdout.lower()
