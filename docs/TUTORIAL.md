@@ -12,17 +12,19 @@ DuckDB.
 
 ```bash
 # Option 1 -- just want the CLI on your PATH (recommended for this tutorial)
-uv tool install --with pandas git+https://github.com/padak/juncture-engine
+uv tool install --with pandas --with pyarrow git+https://github.com/padak/juncture-engine
 
 # Option 2 -- hacking on Juncture itself, from a repo checkout
 git clone https://github.com/padak/juncture-engine.git && cd juncture-engine
 make install     # creates .venv and installs '-e .[dev,pandas]'
 ```
 
-`--with pandas` is needed because Level 2 adds a Python model that imports
-pandas; the SQL-only Levels 1, 3, 4 run without it. If you skip it now and
-hit `ModuleNotFoundError: No module named 'pandas'`, jump to *Managing the
-Juncture environment* below.
+`--with pandas --with pyarrow` is needed because Level 2 adds a Python
+model that imports pandas and Juncture materializes `ctx.ref("orders")`
+as an Arrow table (pyarrow); the SQL-only Levels 1, 3, 4 run without
+them. If you skip them now and hit `ModuleNotFoundError: No module
+named 'pandas'` or `'pyarrow'`, jump to *Managing the Juncture
+environment* below.
 
 Juncture is not on PyPI yet, so plain `pip install juncture` does not
 work — use one of the two recipes above.
@@ -37,11 +39,11 @@ import must be added to that isolated env explicitly.
 ```bash
 # Add (or change) the list of extra packages. --reinstall re-runs install
 # with the full --with set, so list every extra you want kept:
-uv tool install --with pandas --reinstall \
+uv tool install --with pandas --with pyarrow --reinstall \
   git+https://github.com/padak/juncture-engine
 
 # Example: also pull scikit-learn for a model that uses it
-uv tool install --with pandas --with scikit-learn --reinstall \
+uv tool install --with pandas --with pyarrow --with scikit-learn --reinstall \
   git+https://github.com/padak/juncture-engine
 
 # Update Juncture itself to the latest commit on main (keeps the --with list)
