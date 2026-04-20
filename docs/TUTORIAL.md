@@ -1,7 +1,9 @@
 # Tutorial: from zero to a shared-code, parametrized pipeline
 
-*A four-step onboarding narrative. Each step adds one cognitive idea
-on top of the previous one. The final state lives under
+*A five-step onboarding narrative. Each step adds one cognitive idea
+on top of the previous one. Levels 1-4 build the pipeline; Level 5
+hardens it with data tests, a docs manifest, and the web inspection
+UI. The final state lives under
 [`examples/tutorial_shop/`](../examples/tutorial_shop/) — copy it
 side-by-side as you read, or build your own from scratch along with
 the tutorial.*
@@ -455,7 +457,10 @@ the DAG still resolves by running `juncture compile --json`.
 ## Level 4 — external parameters from the CLI
 
 **Goal:** stop editing SQL when you want "last 30 days" or
-"as-of 2026-02-01". Pass it from the outside.
+"as-of 2026-02-01". Pass it from the outside. At the end of this
+level, one `--var lookback_days=7` flag shrinks `daily_revenue` from
+~90 rows to ~7, and `cohort_retention` re-scopes its cohorts — all
+without touching a model file again.
 
 Juncture has three parameter mechanisms, layered:
 
@@ -465,64 +470,143 @@ Juncture has three parameter mechanisms, layered:
    interpolation. Intended for infra (DB paths, credentials), not
    business parameters.
 
-The precedence is `--var` > `juncture.yaml vars:` > nothing. A model
-sees them **identically** whether it's SQL or Python:
+The precedence is `--var` > `juncture.yaml vars:` > Jinja/`ctx.vars`
+default. A model sees the same value whether it's SQL or Python. But
+**the override only fires where a model actually calls `var()`** — so
+wiring takes three edits, one per model.
 
-```sql
--- SQL (needs jinja: true)
-WHERE order_ts >= CAST('{{ var("as_of") }}' AS DATE)
-                  - INTERVAL '{{ var("lookback_days") }} days'
-```
-
-```python
-# Python
-as_of    = pd.to_datetime(ctx.vars("as_of", "2026-03-31"))
-lookback = int(ctx.vars("lookback_days", 90))
-```
-
-### Declare defaults
+### Step 1 — declare defaults in `juncture.yaml`
 
 ```yaml
 # juncture.yaml
-jinja: true
+name: my_shop
+version: 0.1.0
+profile: local
+
+jinja: true                   # already true from Level 3
+
+default_materialization: table
+default_schema: main
+
 vars:
   as_of: "2026-03-31"
   lookback_days: 90
   vip_threshold_eur: 500
+
+connections:
+  local:
+    type: duckdb
+    path: data/my_shop.duckdb
+    threads: 4
 ```
 
-### Override at runtime
+`vip_threshold_eur: 500` here takes over from the hardcoded `500`
+fallback your Level 3 macro kept (`{{ var('vip_threshold_eur', 500) }}`).
+The fallback becomes a last-resort safety net; `juncture.yaml` is now
+the single source of truth.
+
+### Step 2 — wire `var()` into your models
+
+Three edits. Each shows *before* (what you wrote in Level 1-3) and
+*after* (what Level 4 needs).
+
+**`models/daily_revenue.sql`** — add the rolling window:
+
+```sql
+-- BEFORE (Level 3): always aggregates all completed orders
+SELECT
+    {{ my_date('order_ts') }} AS day,
+    COUNT(*)                  AS orders,
+    SUM(amount_eur)           AS revenue_eur,
+    SUM(CASE WHEN {{ is_vip('amount_eur') }} THEN amount_eur ELSE 0 END) AS vip_revenue_eur
+FROM {{ ref('orders') }}
+WHERE status = 'completed'
+GROUP BY 1
+```
+
+```sql
+-- AFTER (Level 4): only orders inside [as_of - lookback_days, as_of]
+SELECT
+    {{ my_date('order_ts') }} AS day,
+    COUNT(*)                  AS orders,
+    SUM(amount_eur)           AS revenue_eur,
+    SUM(CASE WHEN {{ is_vip('amount_eur') }} THEN amount_eur ELSE 0 END) AS vip_revenue_eur
+FROM {{ ref('orders') }}
+WHERE status = 'completed'
+  AND order_ts >= CAST('{{ var("as_of") }}' AS DATE)
+                  - INTERVAL '{{ var("lookback_days") }} days'
+  AND order_ts <  CAST('{{ var("as_of") }}' AS DATE) + INTERVAL '1 day'
+GROUP BY 1
+ORDER BY 1
+```
+
+The quotes around `'{{ var("as_of") }}'` are deliberate: Jinja renders
+the string literal first, then DuckDB parses the `CAST(... AS DATE)`
+around that string.
+
+**`models/cohort_retention.py`** — cap the analysis at `as_of`:
+
+```python
+# BEFORE (Level 2): uses every order
+orders = ctx.ref("orders").to_pandas()
+orders["order_ts"]    = pd.to_datetime(orders["order_ts"])
+orders["order_month"] = orders["order_ts"].dt.to_period("M").astype(str)
+```
+
+```python
+# AFTER (Level 4): same var("as_of") as the SQL side
+orders = ctx.ref("orders").to_pandas()
+orders["order_ts"]    = pd.to_datetime(orders["order_ts"])
+as_of                 = pd.to_datetime(ctx.vars("as_of", "2026-03-31"))
+orders                = orders[orders["order_ts"] <= as_of].copy()
+orders["order_month"] = orders["order_ts"].dt.to_period("M").astype(str)
+```
+
+`ctx.vars(key, default)` reads the **same** precedence stack as Jinja
+`var()`. One `--var as_of=…` flag flips both sides at once.
+
+**`models/shared/customer_tier.sql`** — nothing to change.
+
+Level 3 already had `{{ var('vip_threshold_eur', 500) }}`. The moment
+`vip_threshold_eur` appears in `juncture.yaml vars:` the YAML value
+overrides the macro's hardcoded fallback.
+
+### Step 3 — override at runtime and see the difference
 
 ```bash
-# default window (Jan 1 → Mar 31)
+# Default window (2026-01-01 → 2026-03-31, 90 days back):
 juncture run --project .
+# daily_revenue: ~90 rows, one per day in the window
 
-# last 30 days ending 2026-02-01
+# Last 7 days ending 2026-02-01 — rows drop sharply:
 juncture run --project . \
   --var as_of=2026-02-01 \
-  --var lookback_days=30
+  --var lookback_days=7
+# daily_revenue: ≤7 rows; cohort_retention scoped to cohorts ≤ 2026-02-01
 
-# stricter VIP bar for a one-off analysis
+# Stricter VIP threshold — vip_revenue_eur shrinks, 'vip' count drops:
 juncture run --project . --var vip_threshold_eur=1000
 ```
 
-No SQL changes. `is_vip()` (the macro), `customer_tier` (the ephemeral
-model), `daily_revenue` (the mart), and `cohort_retention` (the Python
-model) all read the same override at once.
+One CLI flag, three models affected — the mart (`daily_revenue`), the
+ephemeral dimension (`customer_tier`), and the Python cohort matrix
+(`cohort_retention`) all respond together because every reference goes
+through the same `var()` / `ctx.vars()` lookup.
 
 ### Where the `vars:` live
 
-- On the command line `--var key=value` wins.
+- `--var key=value` on the CLI wins.
 - Otherwise, `juncture.yaml vars:` block wins.
-- Otherwise the Jinja `var('key', default)` default is used.
-- If no default and the key is missing everywhere, Jinja fails fast
+- Otherwise the Jinja `var('key', default)` / `ctx.vars('key', default)`
+  fallback is used.
+- If no default and the key is missing everywhere, Juncture fails fast
   with `StrictUndefined` — no silent defaults (matches the Juncture
   contract).
 
 ### With Claude Code
 
-> *"Add `as_of` and `lookback_days` to `juncture.yaml vars:`, read them
-> from `daily_revenue.sql` with `{{ var(...) }}` and from
+> *"Add `as_of` and `lookback_days` to `juncture.yaml vars:`, wire them
+> into `daily_revenue.sql` with `{{ var(...) }}` and into
 > `cohort_retention.py` with `ctx.vars(...)`. Then run the project with
 > `--var as_of=2026-01-20 --var lookback_days=7` and show me how the
 > output changed."*
@@ -533,9 +617,159 @@ see the window change immediately.
 
 ---
 
+## Level 5 — tests, docs, and inspection
+
+**Goal:** you have a pipeline. Now ship it with guardrails — **data
+tests** that fail the run on a broken assumption, a **docs manifest**
+that any downstream tool (BI catalog, agent, code review bot) can
+consume, and the **web UI** for hands-on inspection when something
+looks off.
+
+### Data tests
+
+Juncture ships four built-in assertions. Each is declared in
+`schema.yml` next to the models (or a shared `models/schema.yml`);
+every assertion compiles to a single `SELECT COUNT(*) FROM …` that
+expects zero rows.
+
+| Test | What it asserts | Example |
+|---|---|---|
+| `not_null` | No NULL values in the column | `tests: [not_null]` |
+| `unique` | No duplicate values in the column | `tests: [unique]` |
+| `accepted_values` | Column values are a subset of a whitelist | `tests: [{accepted_values: {values: [vip, regular, new]}}]` |
+| `relationships` | Every value exists in a referenced model's column (foreign key) | `tests: [{relationships: {to: customers, field: customer_id}}]` |
+
+Grow your Level 3 `models/schema.yml` to cover the whole pipeline:
+
+```yaml
+version: 2
+
+models:
+  - name: daily_revenue
+    description: Daily revenue over a rolling [as_of - lookback_days, as_of] window.
+    columns:
+      - name: day
+        tests: [not_null]
+      - name: revenue_eur
+        tests: [not_null]
+
+  - name: customer_tier
+    description: Ephemeral per-customer LTV + tier. Tests propagate to consumers.
+    materialization: ephemeral
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: tier
+        tests:
+          - accepted_values:
+              values: [vip, regular, new]
+
+  - name: customer_summary
+    description: Customer dimension joined with LTV tier for BI.
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              to: customers          # target seed/model by name, not ref()
+              field: customer_id
+
+  - name: cohort_retention
+    description: Python-computed cohort-month x order-month retention grid.
+    columns:
+      - name: cohort_month
+        tests: [not_null]
+      - name: retention_pct
+        tests: [not_null]
+```
+
+Run modes:
+
+```bash
+# Build + test in one pass. Fails the run on any test failure:
+juncture run --project . --test
+
+# Just the tests, assuming models are already materialized
+# (fast iteration after adding a new assertion):
+juncture test --project .
+```
+
+**Ephemeral propagation.** `customer_tier` is ephemeral — it has no
+physical table to assert against. Its tests execute against the first
+materialized downstream that `ref('customer_tier')`s it (here,
+`customer_summary`). The guarantee lands *where the data lives*,
+without a throwaway table.
+
+### Docs manifest
+
+Generate a machine-readable snapshot of the whole DAG:
+
+```bash
+juncture docs --project . --output target/docs
+# -> target/docs/manifest.json
+```
+
+The manifest is a single JSON with, per model: `description`,
+`materialization`, `kind` (seed / sql / python), file `path`,
+`depends_on`, `tags`, `columns` with their tests, and any governance
+fields you declared (`owner`, `team`, `criticality`, `sla_*`,
+`consumers`). At the top level it also emits `edges` for the full
+dependency graph.
+
+This is the stable hand-off artefact: the web UI exposes the same
+shape live at `GET /api/manifest` (and offers a download button), and
+`juncture docs` writes it offline so an external catalog (Atlan /
+DataHub / a hand-rolled Markdown catalog generator) or an agent can
+answer DAG-level questions without running the project.
+
+### Inspection via `juncture web`
+
+```bash
+juncture web --project .
+# -> http://127.0.0.1:8765
+```
+
+Tabs you will use:
+
+- **DAG** — Cytoscape render of the whole project. Node shape encodes
+  kind (seed / SQL / Python), node border encodes last-run status
+  (green / red / grey), a pink ring means "PII propagates through
+  here" (governance field on seeds / models).
+- **Models** — source code, column specs, declared tests, downstream
+  consumers for the selected model. Click a node in the DAG or pick
+  from the list.
+- **Seeds** — per-seed format, path, inferred types (parquet only;
+  CSV seeds are runtime-inferred via `read_csv_auto()`, as the seed
+  drawer explains when you open one).
+- **Run history** — timeline of the last N runs from
+  `target/run_history.jsonl`: row counts, durations, slowest models,
+  test failures.
+- **Reliability** — 7/30-day SLA attainment per model, ordered by
+  criticality. Empty until you start declaring `sla_*` governance
+  fields, then it's the first place an oncall looks when a downstream
+  consumer complains.
+
+For headless use, `juncture docs --output target/docs` writes the
+same payload to disk — feed it to an LLM for structured answers about
+the DAG without launching the server.
+
+### With Claude Code
+
+> *"Grow `models/schema.yml` with `not_null` + `unique` on
+> `daily_revenue.day` and a `relationships` check from
+> `customer_summary.customer_id` to `customers`. Run `juncture test`.
+> If anything fails, open the failing rows."*
+
+The skill edits the schema file, runs the suite, parses the result
+table, and either closes the task or opens the failing rows for
+triage.
+
+---
+
 ## What you've built
 
-By the end of Level 4 you have a pipeline that:
+By the end of Level 5 you have a pipeline that:
 
 - Starts from two CSVs (`seeds/orders.csv`, `seeds/customers.csv`).
 - Runs one staging SQL model + one ephemeral dimension + two marts +
@@ -543,16 +777,26 @@ By the end of Level 4 you have a pipeline that:
 - Defines date formatting once (macro) and a VIP rule once
   (macro + ephemeral) — change in one place flips everywhere.
 - Takes runtime parameters from the CLI for windowing, threshold,
-  and as-of dates — no SQL edits.
-- Exposes all of it through `juncture web` (DAG visualiser + source
-  browser + portfolio + reliability dashboard).
+  and as-of dates — wired into SQL Jinja and Python `ctx.vars()`
+  consistently, so one `--var` flag moves everything.
+- Asserts invariants with four built-in data tests
+  (`not_null`, `unique`, `accepted_values`, `relationships`) in
+  `schema.yml`, runnable as `juncture run --test` or standalone
+  `juncture test`.
+- Emits a machine-readable manifest (`juncture docs` →
+  `target/docs/manifest.json`) that external catalogs, agents, and BI
+  tools can consume.
+- Exposes all of it through `juncture web` (DAG + models + seeds +
+  run history + reliability dashboard).
 
 That is the baseline every Juncture project should reach. More
 advanced ingredients — incremental materializations (`materialization:
 incremental`), the `_juncture_state` checkpoint, SQL dialect
-translation for a production Snowflake/BigQuery target, governance
-fields (owner / SLA / PII) — sit on top and are covered in
-[`CONFIGURATION.md`](CONFIGURATION.md) and
+translation for a production Snowflake/BigQuery target, profiles for
+dev/staging/prod, env-var interpolation `${VAR}`, governance fields
+(owner / SLA / PII), Keboola migration (`juncture migrate …`),
+OpenLineage export, and the MCP server for agents — sit on top and
+are covered in [`CONFIGURATION.md`](CONFIGURATION.md) and
 [`DESIGN.md`](DESIGN.md).
 
 ## Reference project
