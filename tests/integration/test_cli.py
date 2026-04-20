@@ -27,7 +27,9 @@ runner = CliRunner()
 
 def test_init_scaffolds_minimal_skeleton(tmp_path: Path) -> None:
     """Default `init` writes juncture.yaml + empty models/ + empty seeds/ +
-    README.md. No demo models, no schema.yml, no tests/ directory."""
+    empty macros/ + README.md. The yaml ships `jinja: false` so the tutorial
+    L3 "flip on Jinja mode" step is a visible find-and-replace. No demo
+    models, no schema.yml, no tests/ directory."""
     target = tmp_path / "new_proj"
     result = runner.invoke(app, ["init", str(target), "--name", "new_proj"])
     assert result.exit_code == 0, result.stdout
@@ -35,7 +37,11 @@ def test_init_scaffolds_minimal_skeleton(tmp_path: Path) -> None:
     assert (target / "juncture.yaml").exists()
     assert (target / "models").is_dir()
     assert (target / "seeds").is_dir()
+    assert (target / "macros").is_dir()
     assert (target / "README.md").exists()
+    # The yaml must carry an explicit jinja: false so users know how to flip it.
+    cfg = (target / "juncture.yaml").read_text()
+    assert "jinja: false" in cfg
     # No demo scaffolding by default.
     assert not (target / "models" / "staging").exists()
     assert not (target / "models" / "marts").exists()

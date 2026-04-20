@@ -94,11 +94,17 @@ That creates a **minimal** project skeleton — your job is to fill it in:
 
 ```
 my_shop/
-├── juncture.yaml            # project config (DuckDB connection, name, profile)
+├── juncture.yaml            # project config (DuckDB conn, name, profile, jinja flag)
 ├── README.md                # generated; short "next steps" reminder
+├── macros/                  # empty: Jinja macros go here (flip jinja: true to use)
 ├── models/                  # empty: SQL + Python transformations go here
 └── seeds/                   # empty: drop CSV / parquet inputs here
 ```
+
+The generated `juncture.yaml` ships with `jinja: false` as an explicit
+placeholder — you'll flip it to `true` in Level 3. Everything else (name,
+DuckDB path, default materialization) is filled in based on your
+directory name.
 
 > **Want a runnable demo instead?** Pass `--with-examples` to `juncture init`
 > and you'll get two ready-made models (`stg_users`, `user_count`) plus a
@@ -310,13 +316,31 @@ A macro is a piece of SQL text you call by name. Think of it as a
 function whose body is SQL. Good for formatters, predicates, CASE
 branches.
 
-First, flip on Jinja mode in `juncture.yaml`:
+First, flip on Jinja mode in `juncture.yaml`. Your init-generated file
+already has the key sitting there as a `false` placeholder — it's a
+top-level entry, same indentation level as `name` / `profile` /
+`connections`. Change it to `true`:
 
 ```yaml
-jinja: true
+# juncture.yaml (relevant lines only)
+name: my_shop
+version: 0.1.0
+profile: local
+
+jinja: true                   # <-- was `jinja: false`; flip it
+
+default_materialization: table
+default_schema: main
+
+connections:
+  local:
+    type: duckdb
+    path: data/my_shop.duckdb
+    threads: 4
 ```
 
-Then drop reusable snippets under `macros/`:
+Then drop reusable snippets under `macros/` (the directory already
+exists — `juncture init` created it for you):
 
 `macros/dates.sql`:
 

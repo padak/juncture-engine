@@ -15,6 +15,16 @@ from __future__ import annotations
 
 # Ordered newest-first. Each value is a list of brief one-line descriptions.
 CHANGELOG: dict[str, list[str]] = {
+    "0.41.1": [
+        "UX: `juncture init` now creates an empty `macros/` directory and "
+        "ships `juncture.yaml` with an explicit `jinja: false` placeholder "
+        "(plus a one-line comment explaining when to flip it). The "
+        "tutorial's Level 3 'flip on Jinja mode' step is now a visible "
+        "find-and-replace instead of a blind insert",
+        "Docs: TUTORIAL.md L1 scaffold tree includes `macros/`; L3 shows "
+        "the full before/after of the `jinja` flag with surrounding yaml "
+        "context (fixes the 'wait, where does `jinja: true` go?' trap)",
+    ],
     "0.41.0": [
         "New: auto-update on startup -- checks GitHub for a newer release, "
         "upgrades via `uv tool install --upgrade`, re-execs the same command "

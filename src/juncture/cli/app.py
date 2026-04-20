@@ -103,11 +103,16 @@ def init(
         name = path.name or "my_juncture_project"
     (path / "models").mkdir(parents=True, exist_ok=True)
     (path / "seeds").mkdir(parents=True, exist_ok=True)
+    (path / "macros").mkdir(parents=True, exist_ok=True)
 
     (path / "juncture.yaml").write_text(
         f"""name: {name}
 version: 0.1.0
 profile: local
+
+# Jinja mode: when true, enables macros under macros/ and {{{{ var(...) }}}}
+# helpers in SQL. Flip to true once you reach Level 3 of the tutorial.
+jinja: false
 
 default_materialization: table
 default_schema: main
