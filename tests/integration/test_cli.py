@@ -25,20 +25,38 @@ from juncture.cli.app import app
 runner = CliRunner()
 
 
-def test_init_scaffolds_usable_project(tmp_path: Path) -> None:
+def test_init_scaffolds_minimal_skeleton(tmp_path: Path) -> None:
+    """Default `init` writes juncture.yaml + empty models/ + empty seeds/ +
+    README.md. No demo models, no schema.yml, no tests/ directory."""
     target = tmp_path / "new_proj"
     result = runner.invoke(app, ["init", str(target), "--name", "new_proj"])
     assert result.exit_code == 0, result.stdout
 
     assert (target / "juncture.yaml").exists()
+    assert (target / "models").is_dir()
+    assert (target / "seeds").is_dir()
+    assert (target / "README.md").exists()
+    # No demo scaffolding by default.
+    assert not (target / "models" / "staging").exists()
+    assert not (target / "models" / "marts").exists()
+    assert not (target / "models" / "schema.yml").exists()
+    assert not (target / "tests").exists()
+
+
+def test_init_with_examples_scaffolds_demo(tmp_path: Path) -> None:
+    target = tmp_path / "demo_proj"
+    result = runner.invoke(app, ["init", str(target), "--name", "demo_proj", "--with-examples"])
+    assert result.exit_code == 0, result.stdout
+
     assert (target / "models" / "staging" / "stg_users.sql").exists()
     assert (target / "models" / "marts" / "user_count.sql").exists()
     assert (target / "models" / "schema.yml").exists()
+    assert (target / "tests").is_dir()
 
 
-def test_init_then_run_succeeds(tmp_path: Path) -> None:
+def test_init_with_examples_then_run_succeeds(tmp_path: Path) -> None:
     target = tmp_path / "e2e"
-    runner.invoke(app, ["init", str(target), "--name", "e2e"])
+    runner.invoke(app, ["init", str(target), "--name", "e2e", "--with-examples"])
     (target / "data").mkdir(exist_ok=True)
     result = runner.invoke(app, ["run", "--project", str(target), "--test"])
     assert result.exit_code == 0, result.stdout
@@ -47,7 +65,7 @@ def test_init_then_run_succeeds(tmp_path: Path) -> None:
 
 def test_compile_json_emits_dag(tmp_path: Path) -> None:
     target = tmp_path / "jsonproj"
-    runner.invoke(app, ["init", str(target), "--name", "jsonproj"])
+    runner.invoke(app, ["init", str(target), "--name", "jsonproj", "--with-examples"])
     result = runner.invoke(app, ["compile", "--project", str(target), "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
@@ -57,7 +75,7 @@ def test_compile_json_emits_dag(tmp_path: Path) -> None:
 
 def test_docs_writes_manifest(tmp_path: Path) -> None:
     target = tmp_path / "docsproj"
-    runner.invoke(app, ["init", str(target), "--name", "docsproj"])
+    runner.invoke(app, ["init", str(target), "--name", "docsproj", "--with-examples"])
     out = target / "target" / "docs"
     result = runner.invoke(app, ["docs", "--project", str(target), "--output", str(out)])
     assert result.exit_code == 0
@@ -68,7 +86,7 @@ def test_docs_writes_manifest(tmp_path: Path) -> None:
 
 def test_run_fails_with_exit_code_on_bad_ref(tmp_path: Path) -> None:
     target = tmp_path / "bad"
-    runner.invoke(app, ["init", str(target), "--name", "bad"])
+    runner.invoke(app, ["init", str(target), "--name", "bad", "--with-examples"])
     # Introduce a typo in a ref to force a DAGError.
     bad_model = target / "models" / "marts" / "user_count.sql"
     bad_model.write_text("SELECT COUNT(*) FROM {{ ref('sgt_users') }}")
@@ -99,7 +117,7 @@ def test_sql_translate_deprecated_alias_still_works() -> None:
 
 def test_sql_sanitize_new_path(tmp_path: Path) -> None:
     target = tmp_path / "sanproj"
-    runner.invoke(app, ["init", str(target), "--name", "sanproj"])
+    runner.invoke(app, ["init", str(target), "--name", "sanproj", "--with-examples"])
     result = runner.invoke(
         app,
         [
@@ -130,7 +148,7 @@ def test_sql_split_new_path(tmp_path: Path) -> None:
 
 def test_test_subcommand(tmp_path: Path) -> None:
     target = tmp_path / "testproj"
-    runner.invoke(app, ["init", str(target), "--name", "testproj"])
+    runner.invoke(app, ["init", str(target), "--name", "testproj", "--with-examples"])
     (target / "data").mkdir(exist_ok=True)
     runner.invoke(app, ["run", "--project", str(target)])
     result = runner.invoke(app, ["test", "--project", str(target)])

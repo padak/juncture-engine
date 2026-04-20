@@ -51,14 +51,21 @@ juncture init my_shop
 cd my_shop
 ```
 
-That creates a project skeleton:
+That creates a **minimal** project skeleton — your job is to fill it in:
 
 ```
 my_shop/
-├── juncture.yaml            # project config
-├── models/                  # your SQL + Python transformations
-└── seeds/                   # CSVs / parquet loaded before the DAG runs
+├── juncture.yaml            # project config (DuckDB connection, name, profile)
+├── README.md                # generated; short "next steps" reminder
+├── models/                  # empty: SQL + Python transformations go here
+└── seeds/                   # empty: drop CSV / parquet inputs here
 ```
+
+> **Want a runnable demo instead?** Pass `--with-examples` to `juncture init`
+> and you'll get two ready-made models (`stg_users`, `user_count`) plus a
+> `schema.yml` with data tests. The tutorial below assumes the default
+> (empty) scaffold — if you used `--with-examples`, delete
+> `models/staging/`, `models/marts/` and `models/schema.yml` first.
 
 ### Drop your CSVs into `seeds/`
 
@@ -73,16 +80,22 @@ table `orders`. Downstream models reference it via `{{ ref('orders') }}`.
 
 ### Don't have any CSVs? Generate them.
 
-The repo ships a zero-dependency generator tailored for this tutorial.
-From a clone of Juncture:
+The Juncture repo ships a zero-dependency generator tailored for this
+tutorial. Clone the repo once (separately from any `uv tool install`),
+then run the generator from inside **your** project directory:
 
 ```bash
-# From repo root. Default output is examples/tutorial_shop/seeds/
-python examples/tutorial_shop/scripts/generate_data.py                  # small: 50 + 200
-python examples/tutorial_shop/scripts/generate_data.py --scale medium   # 500 + 2 000
+# One-off clone so you have the generator on disk:
+git clone https://github.com/padak/juncture-engine.git ~/src/juncture-engine
 
-# Generate into your own project instead:
-python examples/tutorial_shop/scripts/generate_data.py --output-dir my_shop/seeds
+cd my_shop      # <-- stay inside your project; the default --output-dir is ./seeds
+python ~/src/juncture-engine/examples/tutorial_shop/scripts/generate_data.py
+#   -> writes seeds/customers.csv (50 rows) + seeds/orders.csv (200 rows)
+
+# Larger volumes or a fully explicit path:
+python ~/src/juncture-engine/examples/tutorial_shop/scripts/generate_data.py --scale medium
+python ~/src/juncture-engine/examples/tutorial_shop/scripts/generate_data.py \
+    --output-dir /tmp/seeds
 ```
 
 Writes `customers.csv` and `orders.csv` with the same schema the tutorial

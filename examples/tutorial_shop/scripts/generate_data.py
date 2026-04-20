@@ -17,10 +17,13 @@ No third-party dependencies: uses ``random`` seeded from ``--seed`` (default
 
 Usage::
 
-    # run from repo root; default output is examples/tutorial_shop/seeds/
-    .venv/bin/python examples/tutorial_shop/scripts/generate_data.py
-    .venv/bin/python examples/tutorial_shop/scripts/generate_data.py --scale medium
-    .venv/bin/python examples/tutorial_shop/scripts/generate_data.py --output-dir /tmp/seeds
+    # cd into your project first; default output is ``./seeds`` (CWD).
+    cd my_shop
+    python /path/to/juncture-engine/examples/tutorial_shop/scripts/generate_data.py
+    python /path/to/juncture-engine/examples/tutorial_shop/scripts/generate_data.py --scale medium
+
+    # Or explicit, from anywhere:
+    python .../generate_data.py --output-dir /tmp/seeds
 """
 
 from __future__ import annotations
@@ -137,15 +140,21 @@ def write_csv(path: Path, rows: list[dict[str, str | int]]) -> None:
 
 
 def main() -> None:
-    script_dir = Path(__file__).resolve().parent
-    default_out = script_dir.parent / "seeds"
+    # Resolve the default lazily so users who cd into a project get data
+    # written next to them, not into the repo where this script lives.
+    default_out = Path.cwd() / "seeds"
 
     parser = argparse.ArgumentParser(
-        description="Generate synthetic seeds for examples/tutorial_shop.",
+        description="Generate synthetic seeds compatible with docs/TUTORIAL.md.",
     )
     parser.add_argument("--scale", choices=list(SCALES), default="small")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output-dir", type=Path, default=default_out)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=default_out,
+        help="Target directory for customers.csv / orders.csv (default: ./seeds in CWD).",
+    )
     args = parser.parse_args()
 
     cfg = SCALES[args.scale]
