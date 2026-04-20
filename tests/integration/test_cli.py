@@ -43,6 +43,29 @@ def test_init_scaffolds_minimal_skeleton(tmp_path: Path) -> None:
     assert not (target / "tests").exists()
 
 
+def test_init_derives_name_from_directory(tmp_path: Path) -> None:
+    """`juncture init my_shop` (no --name) must use the dirname for both the
+    project name and the DuckDB file path. Covers the tutorial flow where the
+    user runs `juncture init my_shop` and then expects `data/my_shop.duckdb`."""
+    target = tmp_path / "my_shop"
+    result = runner.invoke(app, ["init", str(target)])
+    assert result.exit_code == 0, result.stdout
+
+    cfg = (target / "juncture.yaml").read_text()
+    assert "name: my_shop" in cfg
+    assert "path: data/my_shop.duckdb" in cfg
+
+
+def test_init_explicit_name_overrides_directory(tmp_path: Path) -> None:
+    target = tmp_path / "my_shop"
+    result = runner.invoke(app, ["init", str(target), "--name", "shop_v2"])
+    assert result.exit_code == 0, result.stdout
+
+    cfg = (target / "juncture.yaml").read_text()
+    assert "name: shop_v2" in cfg
+    assert "path: data/shop_v2.duckdb" in cfg
+
+
 def test_init_with_examples_scaffolds_demo(tmp_path: Path) -> None:
     target = tmp_path / "demo_proj"
     result = runner.invoke(app, ["init", str(target), "--name", "demo_proj", "--with-examples"])

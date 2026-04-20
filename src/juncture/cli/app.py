@@ -11,6 +11,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from juncture._auto_update import maybe_auto_update, show_post_update_changelog
+from juncture._changelog import DEFAULT_CHANGELOG_LIMIT, get_changelog
 from juncture._version import __version__
 from juncture.cli.debug_cmds import debug_app
 from juncture.cli.migrate import migrate_app
@@ -55,6 +57,11 @@ def _root(
         is_eager=True,
     ),
 ) -> None:
+    # Auto-update runs first so an upgrade-and-reexec happens before any
+    # real work. Both calls are no-ops in dev/editable installs, opted-out
+    # sessions, and subcommands like `update` / `changelog` / `web`.
+    maybe_auto_update()
+    show_post_update_changelog()
     # Typer's ``no_args_is_help`` only fires when *no* flags are passed; when
     # ``--version`` is passed alone, is_eager handles the exit. Otherwise show
     # help if no subcommand was invoked.
@@ -71,7 +78,11 @@ def _root(
 @app.command(rich_help_panel="Core workflow")
 def init(
     path: Path = typer.Argument(Path("."), help="Target directory for the new project."),
-    name: str = typer.Option("my_juncture_project", "--name", help="Project name."),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        help="Project name. Defaults to the target directory name.",
+    ),
     with_examples: bool = typer.Option(
         False,
         "--with-examples",
@@ -88,6 +99,8 @@ def init(
     hard-coded VALUES.
     """
     path = path.resolve()
+    if name is None:
+        name = path.name or "my_juncture_project"
     (path / "models").mkdir(parents=True, exist_ok=True)
     (path / "seeds").mkdir(parents=True, exist_ok=True)
 
@@ -166,6 +179,54 @@ connections:
             border_style="green",
         )
     )
+
+
+@app.command(rich_help_panel="Maintenance")
+def update() -> None:
+    """Manually upgrade Juncture to the latest GitHub release.
+
+    Bypasses the 1-hour version cache. Uses ``uv tool install --upgrade``
+    when ``uv`` is on PATH, falling back to ``pip install --upgrade``.
+    Exit code 0 on success or already-up-to-date, 1 on failure.
+    """
+    from juncture._auto_update import _fetch_latest_version, _perform_update
+
+    latest = _fetch_latest_version()
+    if latest is None:
+        console.print("[red]Failed to fetch latest version from GitHub.[/]")
+        raise typer.Exit(code=1)
+
+    if __version__ == latest:
+        console.print(f"[green]Already up to date[/] (v{__version__}).")
+        return
+
+    console.print(f"Current: v{__version__} -> Latest: v{latest}")
+    console.print(f"Installing v{latest}...")
+    if _perform_update(latest):
+        console.print(f"[green]Updated to v{latest}.[/] Re-run your command to use it.")
+    else:
+        console.print("[red]Update failed.[/] Check uv / pip logs.")
+        raise typer.Exit(code=1)
+
+
+@app.command(rich_help_panel="Maintenance")
+def changelog(
+    limit: int = typer.Option(
+        DEFAULT_CHANGELOG_LIMIT,
+        "--limit",
+        "-n",
+        help="Number of versions to show (newest first).",
+    ),
+) -> None:
+    """Show recent Juncture releases (one-line summaries per version)."""
+    entries = get_changelog(limit=limit)
+    if not entries:
+        console.print("[dim]No changelog entries.[/]")
+        return
+    for ver, notes in entries.items():
+        console.print(f"\n[bold]v{ver}[/]")
+        for note in notes:
+            console.print(f"  - {note}")
 
 
 @app.command(rich_help_panel="Core workflow")
