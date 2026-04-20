@@ -41,6 +41,13 @@ logging.basicConfig(
 
 def _version_callback(value: bool) -> None:
     if value:
+        # ``--version`` / ``-V`` is a Typer option with ``is_eager=True``, so
+        # it fires *before* the ``_root`` body. Run the auto-update flow here
+        # too, otherwise ``juncture -V`` would never trigger an upgrade.
+        # If an update happens, ``_re_exec`` replaces this process with the
+        # new binary and we never return to the print below.
+        maybe_auto_update()
+        show_post_update_changelog()
         console.print(f"juncture {__version__}")
         raise typer.Exit()
 

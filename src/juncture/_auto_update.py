@@ -53,7 +53,7 @@ GITHUB_REPO: str = "padak/juncture-engine"
 INSTALL_SOURCE: str = "git+https://github.com/padak/juncture-engine.git"
 ENV_AUTO_UPDATE: str = "JUNCTURE_AUTO_UPDATE"
 ENV_SKIP_UPDATE: str = "JUNCTURE_SKIP_UPDATE"
-AUTO_UPDATE_CHECK_INTERVAL: int = 3600  # 1 hour TTL for the version cache
+AUTO_UPDATE_CHECK_INTERVAL: int = 300  # 5 minutes TTL for the version cache
 VERSION_CHECK_TIMEOUT: float = 4.0  # seconds for the GitHub API call
 VERSION_CACHE_FILENAME: str = "version_cache.json"
 

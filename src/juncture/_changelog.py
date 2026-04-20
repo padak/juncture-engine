@@ -15,6 +15,18 @@ from __future__ import annotations
 
 # Ordered newest-first. Each value is a list of brief one-line descriptions.
 CHANGELOG: dict[str, list[str]] = {
+    "0.41.2": [
+        "Fix: `juncture -V` / `--version` now triggers the auto-update flow. "
+        "Typer's `is_eager=True` on the option made the version callback "
+        "fire *before* the `_root` body, so `maybe_auto_update()` never ran; "
+        "the callback now calls it explicitly before printing the version",
+        "Fix: reduce the version-cache TTL from 1 hour to 5 minutes. With "
+        "the old TTL, a `juncture run` right after a release was "
+        "served from a stale cache (which still said 'you're on latest') "
+        "until the next hour rolled over. 5 minutes keeps network load "
+        "bounded while making new releases visible within minutes. "
+        "Manual `juncture update` still bypasses the cache entirely",
+    ],
     "0.41.1": [
         "UX: `juncture init` now creates an empty `macros/` directory and "
         "ships `juncture.yaml` with an explicit `jinja: false` placeholder "
